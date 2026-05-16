@@ -60,8 +60,8 @@ train = {cmd = "pixi run python main.py --train_new_model"}
 train_quant = {cmd = "pixi run python main.py --train_new_model --quantize"}
 
 # replicate conference proceedings results
-nordland_train = {cmd = "pixi run python main.py --train_new_model --database_places 3300 --database_dirs spring,fall --skip 0 --max_module 1100 --dataset nordland --dims 28,28 --patches 7 --filter 8"}
-nordland_eval = {cmd = "pixi run python main.py --database_places 3300 --database_dirs spring,fall --skip 4800 --dataset nordland --dims 28,28 --patches 7 --filter 8 --query_dir summer --query_places 2700 --sim_mat --max_module 1100"}
+nordland_train = {cmd = "pixi run python main.py --train_new_model --database_places 3300 --database_dirs spring,fall --skip 0 --max_module 1100 --dataset nordland --dims 28,28 --patches 7 --filter 8 --data_dir /mnt/d/Data/datasets/vpr/Nordland"}
+nordland_eval = {cmd = "pixi run python main.py --database_places 3300 --database_dirs spring,fall --skip 4800 --dataset nordland --dims 28,28 --patches 7 --filter 8 --query_dir summer --query_places 2700 --sim_mat --max_module 1100 --data_dir /mnt/d/Data/datasets/vpr/Nordland"}
 oxford_train = {cmd = "pixi run python main.py --train_new_model --dataset orc --database_places 450 --database_dirs sun,rain --skip 0 --max_module 450 --dataset orc --dims 28,28 --patches 7 --filter 7"}
 oxford_eval = {cmd = "python main.py --dataset orc --database_places 450 --database_dirs sun,rain --skip 630 --dataset orc --dims 28,28 --patches 7 --filter 7 --query_dir dusk --query_places 360 --sim_mat --max_module 450"}
 

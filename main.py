@@ -37,10 +37,16 @@ from vprtempo.src.loggers import model_logger, model_logger_quant
 from vprtempo.VPRTempoQuant import VPRTempoQuant, run_inference_quant
 from vprtempo.VPRTempoQuantTrain import VPRTempoQuantTrain, train_new_model_quant
 
-def generate_model_name(model,quant=False):
+def generate_model_name(model,quant=False,custom_name=None):
     """
     Generate the model name based on its parameters.
+    If custom_name is provided, use it directly (append .pth if missing).
     """
+    if custom_name:
+        if not custom_name.endswith('.pth'):
+            custom_name += '.pth'
+        return custom_name
+    
     if quant:
         model_name = (''.join(model.database_dirs)+"_"+
                 "VPRTempoQuant_" +
@@ -113,7 +119,7 @@ def initialize_and_run_model(args,dims):
                 if mod == num_modules - 2:
                     final_out = final_out_dim
             # Generate the model name
-            model_name = generate_model_name(model,args.quantize)
+            model_name = generate_model_name(model,args.quantize,args.model_name)
             # Check if the model has been trained before
             check_pretrained_model(model_name)
             # Get the quantization config
@@ -136,7 +142,7 @@ def initialize_and_run_model(args,dims):
                     final_out = final_out_dim
 
             # Generate the model name
-            model_name = generate_model_name(model)
+            model_name = generate_model_name(model,custom_name=args.model_name)
             print(f"Model name: {model_name}")
             # Check if the model has been trained before
             check_pretrained_model(model_name)
@@ -168,7 +174,7 @@ def initialize_and_run_model(args,dims):
                 quantization.convert(model, inplace=True)
                 models.append(model)
             # Generate the model name
-            model_name = generate_model_name(model, args.quantize)
+            model_name = generate_model_name(model, args.quantize, args.model_name)
             # Run the quantized inference model
             run_inference_quant(models, model_name)
         else:
@@ -194,7 +200,7 @@ def initialize_and_run_model(args,dims):
                 if mod == num_modules - 2:
                     final_out = final_out_dim
             # Generate the model name
-            model_name = generate_model_name(model)
+            model_name = generate_model_name(model,custom_name=args.model_name)
             print(f"Model name: {model_name}")
             # Run the inference model
             run_inference(models, model_name)
@@ -242,6 +248,8 @@ def parse_network():
                             help="Flag to run the training or inferencing model")
     parser.add_argument('--quantize', action='store_true',
                             help="Enable/disable quantization for the model")
+    parser.add_argument('--model_name', type=str, default=None,
+                            help="Custom model name (optional). If provided, overrides auto-generated name.")
     
     # Define metrics functionality
     parser.add_argument('--PR_curve', action='store_true',
