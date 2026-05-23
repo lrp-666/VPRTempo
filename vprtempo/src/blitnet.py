@@ -48,9 +48,19 @@ import numpy as np
 #   2. 推理模式 (inference=True) : 仅保留权重矩阵和阈值，用于前向传播
 # ================================================================================
 class SNNLayer(nn.Module):
-    def __init__(self, dims=[0,0], thr_range=[0,0], fire_rate=[0,0], ip_rate=0,
-                 stdp_rate=0, const_inp=[0,0], p=[1,1], spk_force=False,
-                 device=None, inference=False, args=None):
+    def __init__(self, 
+                 dims=[0,0],  # 输入维度和输出维度，如 [3136, 6272] 表示输入 56x56=3136 像素，输出为输入的 2 倍（VPRTempo 默认架构）
+                 thr_range=[0,0], # 初始发放阈值的均匀分布范围 [min, max]，论文表 I 中 θ_max=0.5，即 thr_range=[0, 0.5]
+                 fire_rate=[0,0], # 目标发放率范围 [f_min, f_max]，论文表 I 中 [0.2, 0.9]。特征层神经元会被赋予从低到高线性分布的目标发放率
+                 ip_rate=0, # ITP (Intrinsic Threshold Plasticity) 学习率 η_ITP，论文表 I 中初始值为 0.15
+                 stdp_rate=0, # STDP 学习率 η_STDP，论文表 I 中初始值为 0.005
+                 const_inp=[0,0], # 恒定输入 C 的范围 [min, max]，对应公式 (1) 中的 C。BLiTNet 论文中 C≈0.1，但 VPRTempo 代码中默认 [0,0]
+                 p=[1,1],  # 连接概率 [P_exc, P_inh]，论文表 I 中 [0.1, 0.5] TODO 所以这里是全连接吗？
+                 spk_force=False,# 是否启用 Spike Forcing（仅在输出层 LO 使用），对应 VPRTempo 论文 III-A 末段和公式 (6)
+                 device=None, # 计算设备 (cuda:0 / mps / cpu)，默认为 None 表示自动选择
+                 inference=False, # True 表示推理模式，False 表示训练模式。推理模式下不包含学习机制，仅保留前向传播所需的权重和阈值。
+                 args=None # 额外的命令行参数（预留）
+                 ):
         """
         ================================================================================
         函数层说明：SNNLayer 的构造函数
