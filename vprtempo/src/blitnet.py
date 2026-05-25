@@ -280,7 +280,7 @@ class SNNLayer(nn.Module):
         Wsd = (W_range[1] - W_range[0]) / 6.0
 
         # ----------------------------------------
-        # 逐行说明：初始化空张量（历史遗留，实际未使用此维度）
+        # 逐行说明：初始化空张量（历史遗留，实际未使用此维度） TODO 可以删除
         # ----------------------------------------
         W = torch.empty((0, nrow, ncol), device=device)
 
@@ -375,7 +375,7 @@ def add_input(spikes, layer):
 #          - 上限 0.9 防止脉冲幅度无限增长导致网络饱和（avalanche）
 # ================================================================================
 def clamp_spikes(spikes, layer):
-    # spikes: 当前神经元在减去阈值前的净输入张量
+    # spikes: 当前神经元在减去阈值前的净输入张量 TODO 应该是包含了这个C吧？ 是的
     # layer : SNNLayer 实例，包含 thr（阈值）参数
 
     # Step 1: 减去阈值 θ（对应公式 1 中的 - θ 项）
@@ -467,7 +467,7 @@ def calc_stdp(prespike, spikes, noclp, layer, idx, prev_layer=None):
         # 逐行说明：发放率调制的前层脉冲
         # ----------------------------------------
         # BLiTNet 论文指出：低发放率的前层神经元应该具有更高的有效学习率。
-        # 原因：如果一个前层神经元很少发放，那么当它确实发放时，其携带的信息更珍贵，
+        # 原因：TODO 如果一个前层神经元很少发放，那么当它确实发放时，其携带的信息更珍贵，
         #      应该对后层权重产生更大的影响。
         # 实现：mpre = prespike / prev_layer.fire_rate
         #      当 fire_rate 低时，除法结果大，学习率等效增强。
@@ -484,7 +484,7 @@ def calc_stdp(prespike, spikes, noclp, layer, idx, prev_layer=None):
         #   pre : [输入维度, 1] → tile → [输入维度, 输出维度]
         #   post: [1, 输出维度]  → tile → [输入维度, 输出维度]
         # 这样 pre[i,j] 表示从输入 i 到输出 j 的前层脉冲
-        #     post[i,j] 表示从输入 i 到输出 j 的后层误差
+        #     post[i,j] 表示从输入 i 到输出 j 的后层误差 就是xdiff
         pre = torch.tile(torch.reshape(mpre, (shape[1], 1)), (1, shape[0]))
         post = torch.tile(xdiff, (shape[1], 1))
 
@@ -547,7 +547,8 @@ def calc_stdp(prespike, spikes, noclp, layer, idx, prev_layer=None):
         #   η_STDP       : 当前时刻的学习率
         #   havconnCombinedExc.T : 兴奋连接掩码，确保只有正权重被更新
         layer.w.weight.data += (((0.5 - post) * (pre > 0) * (post > 0) *
-                                  layer.havconnCombinedExc.T) * layer.eta_stdp).T
+                                  layer.havconnCombinedExc.T) 
+                                  * layer.eta_stdp).T
 
         # ----------------------------------------
         # 逐行说明：抑制性权重更新
@@ -556,8 +557,9 @@ def calc_stdp(prespike, spikes, noclp, layer, idx, prev_layer=None):
         # 且学习率乘以 -1，使得更新方向相反：
         #   当 (0.5 - post) > 0（post 不足）时，兴奋权重增加，抑制权重减小（趋近于 0）
         #   这是因为抑制输入对输出有负向贡献，要增加输出就应该减弱抑制。
-        layer.w.weight.data += (((0.5 - post) * (pre > 0) *
-                                  (post > 0) * layer.havconnCombinedInh.T) * (layer.eta_stdp * -1)).T
+        layer.w.weight.data += (((0.5 - post) * (pre > 0) * (post > 0) 
+                                 * layer.havconnCombinedInh.T) 
+                                 * (layer.eta_stdp * -1)).T
 
     # ================================================================================
     # 步骤三：权重符号保持（Sign Clamping）
