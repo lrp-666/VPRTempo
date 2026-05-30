@@ -64,7 +64,14 @@ from vprtempo.src.dataset import CustomImageDataset, ProcessImage  # 自定义�
 # 架构     : 两层 SNN —— feature_layer (稀疏连接) + output_layer (全连接)
 # ================================================================================
 class VPRTempoTrain(nn.Module):
-    def __init__(self, args, dims, logger, num_modules, out_dim, out_dim_remainder=None):
+    def __init__(self,  # self,用来访问实例属性和方法
+                 args,  # argparse.Namespace，命令行参数对象，包含所有用户配置的超参数和选项
+                 dims,  # 图像缩放尺寸 [H, W]，例如 [56, 56]，用于计算输入和特征层维度
+                 logger, # 日志记录器对象，用于输出训练过程中的信息和调试日志
+                 num_modules, # 总模块数（main.py 根据 database_places/max_module 计算），用于训练流程控制
+                 out_dim,     # 每个标准模块的输出神经元数（地点数），例如 500，定义 output_layer 的输出维度
+                 out_dim_remainder=None # 最后一个模块的输出神经元数（余数模块），当最后一个模块的地点数不足 max_module 时使用，例如 136
+                 ):
         """
         ================================================================================
         【函数级注释】构造函数 __init__
@@ -166,8 +173,11 @@ class VPRTempoTrain(nn.Module):
         # 例：max_module=500, location_repeat=2 (spring+fall), epoch=4
         #     → T = 500 * 2 * 4 = 4000 步
         # ----------------------------------------
-        self.database_dirs = [dir.strip() for dir in self.database_dirs.split(',')]
-        self.location_repeat = len(self.database_dirs)  # 训练时遍历的文件夹数（季节数）
+        # 处理 database_dirs，去除多余空格，得到文件夹列表
+        self.database_dirs = [dir.strip() for dir in self.database_dirs.split(',')]  
+        # 训练时遍历的文件夹数（季节数）
+        self.location_repeat = len(self.database_dirs)  
+        # 计算总时间步 T，优先使用 out_dim_remainder 计算最后一个模块的 T，否则使用 max_module 计算标准模块的 T
         if not out_dim_remainder is None:
             self.T = int(out_dim_remainder * self.location_repeat * self.epoch)
         else:
@@ -262,7 +272,12 @@ class VPRTempoTrain(nn.Module):
     # 实现注意 : 代码中使用 (T-mod)^2 / T^2，与 (1-t/T)^2 数学等价。
     # 触发频率 : 每 100 个时间步更新一次，减少计算开销
     # ================================================================================
-    def _anneal_learning_rate(self, layer, mod, itp, stdp):
+    def _anneal_learning_rate(self, 
+                              layer, 
+                              mod, 
+                              itp, 
+                              stdp
+                              ):
         """
         ================================================================================
         【函数级注释】学习率多项式退火
@@ -309,7 +324,13 @@ class VPRTempoTrain(nn.Module):
     #   3. 输出层通过 idx 传入 Spike Forcing 的神经元索引（论文公式 6）
     # 内存优化 : 已训练层前向传播使用 torch.no_grad()，不保存计算图
     # ================================================================================
-    def train_model(self, train_loader, layer, model, model_num, prev_layers=None):
+    def train_model(self, 
+                    train_loader, 
+                    layer, 
+                    model, 
+                    model_num, 
+                    prev_layers=None
+                    ):
         """
         ================================================================================
         【函数级注释】训练网络的某一层（单个模块）
@@ -420,6 +441,10 @@ class VPRTempoTrain(nn.Module):
                 pre_spike = spikes.detach()                # 保存前层脉冲，供 STDP 使用（前突触活动）
                 spikes = self.forward(spikes, layer)        # 当前层前向传播：计算 W*x（尚未减阈值）
                 spikes_noclp = spikes.detach()             # 保存未钳制的值，供 Homeostasis 使用
+                #关于这个地方为什么要保留未钳制的值，
+                #是因为在 calc_stdp 中会同时使用钳制后的 spikes 和 未钳制的 spikes_noclp 来分别计算 STDP 权重更新和 Homeostasis 稳态归一化。
+                #钳制后的 spikes 用于权重更新，确保神经元发放率在目标范围内；
+                # 而未钳制的 spikes_noclp 则用于 Homeostasis 计算，反映神经元的真实活动水平，帮助调整阈值以维持稳定的发放率。
                 spikes = bn.clamp_spikes(spikes, layer)    # 钳制到 [0, fire_rate_max=0.9]
                 
                 # -----------------------------------------------------------------
@@ -503,7 +528,8 @@ class VPRTempoTrain(nn.Module):
         # 【行级注释】遍历所有模块，收集各自的 state_dict
         # state_dict 是 PyTorch 模型参数的 OrderedDict，包含所有可学习参数和缓冲区
         # -----------------------------------------------------------------------------
-        state_dicts = {}
+        state_dicts = {}                # 用于存储所有模块的 state_dict，键名为 'model_0', 'model_1', ...
+        # 遍历 models 列表，使用 enumerate 获取模块索引 i 和模块对象 model
         for i, model in enumerate(models):
             state_dicts[f'model_{i}'] = model.state_dict()
         
@@ -608,13 +634,19 @@ def train_new_model(models, model_name):
     #   module 0: [0,     0 + 499*8]     = [0,     3992]
     #   module 1: [4000,  4000 + 499*8]  = [4000,  7992]
     #   module 2: [8000,  8000 + 499*8]  = [8000,  11992]
+    #    [
+    #    [0, 3992],      # model_0 负责读取 CSV 里的第 0 到 3992 行
+    #    [4000, 7992],   # model_1 负责读取 CSV 里的第 4000 到 7992 行
+    #    [8000, 11992]   # model_2 负责读取 CSV 里的第 8000 到 11992 行
+    #    ]
     # 注意：相邻模块的间隔 = filter，保证不重叠且连续
     # ----------------------------------------
-    user_input_ranges = []
+    user_input_ranges = [] # 用于存储每个模块负责的图像索引范围
     start_idx = 0
     for _ in range(models[0].num_modules):
         # 计算当前模块的结束索引（注意是 (max_module-1)*filter，因为包含两端）
         range_temp = [start_idx, start_idx + ((models[0].max_module - 1) * models[0].filter)]
+        # 将当前模块的图像索引范围添加到列表中
         user_input_ranges.append(range_temp)
         # 下一个模块的起始索引 = 当前结束索引 + filter
         start_idx = range_temp[1] + models[0].filter
@@ -626,7 +658,7 @@ def train_new_model(models, model_name):
     # trained_layers : 记录已经训练好的层名称
     # 训练 output_layer 时，feature_layer 已在 prev_layers 中，前向传播固定
     # ----------------------------------------
-    trained_layers = [] 
+    trained_layers = []  # 用于记录已训练层的名称，供后续层训练时固定参数使用
     
     # -----------------------------------------------------------------------------
     # 【行级注释】按 layer_dict 中的顺序排序层名（feature_layer=0, output_layer=1）

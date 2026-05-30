@@ -415,7 +415,13 @@ def clamp_spikes(spikes, layer):
 #   idx        : 当前样本对应的输出神经元索引（仅用于 Spike Forcing）
 #   prev_layer : 前一层的 SNNLayer 实例（用于获取其 fire_rate 以调制学习率）
 # ================================================================================
-def calc_stdp(prespike, spikes, noclp, layer, idx, prev_layer=None):
+def calc_stdp(prespike,  # 前一层的脉冲输出 x_i^m(t-1)，形状 [batch, 输入维度]
+              spikes,    # 当前层的脉冲输出 x_j^n(t)，形状 [batch, 输出维度]，已经经过 clamp
+              noclp,     # 当前层在 clamp 前的原始净输入（未减去阈值、未钳制），形状 [batch, 输出维度]
+              layer,     # 当前要更新的 SNNLayer 实例，包含权重、阈值、学习率等参数
+              idx,       # 当前样本对应的输出神经元索引（仅用于 Spike Forcing），形状 [1]，值为当前训练样本的地点标签经换算后的输出神经元索引
+              prev_layer=None  # 前一层的 SNNLayer 实例，用于获取其 fire_rate 以调制学习率（仅在 Spike Forcing 中使用）
+              ):
     """
     逐层说明：
         本函数实现了 BLiTNet/VPRTempo 的完整学习规则，包括：
