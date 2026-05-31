@@ -93,7 +93,15 @@ from vprtempo.src.dataset import CustomImageDataset, ProcessImage
 #   维度: input_dim  →  feature_dim = input_dim * 2  →  output_dim = 模块内场景数
 # ================================================================================
 class VPRTempo(nn.Module):
-    def __init__(self, args, dims, logger, num_modules, output_folder, out_dim, out_dim_remainder=None):
+    def __init__(self, 
+                 args, 
+                 dims, 
+                 logger, 
+                 num_modules, 
+                 output_folder, 
+                 out_dim, 
+                 out_dim_remainder=None
+                 ):
         """
         ================================================================================
         【函数级注释 —— VPRTempo 构造函数】
