@@ -189,7 +189,7 @@ class VPRTempo(nn.Module):
         # layer_counter  : 层计数器，每次 add_layer 后自增
         # database_dirs  : 数据库图像文件夹列表，同样支持逗号分隔多个文件夹
         # ----------------------------------------
-        self.layer_dict = {}
+        self.layer_dict = {} # 用于存储层名称到索引的映射，方便后续访问
         self.layer_counter = 0
         self.database_dirs = [dir.strip() for dir in self.database_dirs.split(',')]
 
@@ -333,7 +333,7 @@ class VPRTempo(nn.Module):
         # 注意：这里取的是 model.feature_layer.w 和 model.output_layer.w，
         #       它们是 nn.Parameter 或 nn.Linear 对象，可以作为 nn.Sequential 的层。
         # ================================================================================
-        self.inferences = []
+        self.inferences = [] # 存储每个模块的 nn.Sequential 推理链，每个元素对应一个模块
         for model in models:
             self.inferences.append(nn.Sequential(
                 model.feature_layer.w,
@@ -381,8 +381,8 @@ class VPRTempo(nn.Module):
         #   S[i, j] 表示第 j 个查询图像与第 i 个数据库地点的相似度（脉冲幅度）。
         #   对应论文公式 (9) 中的 x_i，用于后续 argmax 或 top-K 匹配。
         # ================================================================================
-        out = torch.stack(out, dim=2)
-        out = out.squeeze(0).numpy()
+        out = torch.stack(out, dim=2) #在dim=1(神经元数)上添加一个新维度——查询图像维度
+        out = out.squeeze(0).numpy()  #去掉 batch 维度，转换为 NumPy 数组，形状 [total_output_neurons, query_places]
        
         # ================================================================================
         # 【行级注释 —— 阶段 4：构建 Ground Truth 矩阵 GT】
@@ -403,7 +403,7 @@ class VPRTempo(nn.Module):
             # 初始化全零矩阵，形状 [database_places, query_places]
             GT = np.zeros((model.database_places, model.query_places))
             # 计算降采样后的 skip 偏移量（因为数据库和查询都已按 filter 步长采样）
-            skip = model.skip // model.filter
+            skip = model.skip // model.filter #整除 filter 得到实际的帧数偏移，例如 skip=100, filter=8 → skip=12（向下）
             # query_indices = [0, 1, 2, ..., query_places-1]
             query_indices = np.arange(model.query_places)
             # 在对角线偏移 skip 的位置设为 1
@@ -424,8 +424,8 @@ class VPRTempo(nn.Module):
         # 实现方式：遍历 GT 的每一列（每个查询），找到值为 1 的行，
         #          然后将该行的 [row-tolerance, row+tolerance] 范围内都置为 1。
         # ================================================================================
-        if self.GT_tolerance > 0:
-            num_rows, num_cols = GT.shape
+        if self.GT_tolerance > 0:  #GT_tolerance是一个整数，表示容差窗口的大小
+            num_rows, num_cols = GT.shape # GT 的行数 = 数据库地点数，列数 = 查询地点数
             for col in range(num_cols):
                 # 找到当前列中所有为 1 的行索引（正常情况下只有 1 个）
                 ones_indices = np.where(GT[:, col] == 1)[0]
@@ -452,9 +452,12 @@ class VPRTempo(nn.Module):
         #   n_thresh  : 阈值数量（默认 100），越多曲线越平滑
         # ================================================================================
         if model.PR_curve:
+            # createPR 返回两个列表 P 和 R，分别对应不同阈值下的 Precision 和 Recall 值
             P, R = createPR(out, GT, matching='single', n_thresh=100)
+            # 将 Precision 和 Recall 数据保存为 JSON 格式，文件名为 PR_curve_data.json
             PR_data = {"Precision": P, "Recall": R}
             full_path = f"{model.output_folder}/PR_curve_data.json"
+            # 确保输出文件夹存在，如果不存在则创建
             with open(full_path, 'w') as file:
                 json.dump(PR_data, file) 
             # 仅在非 demo 模式下显示图表（demo 模式有自己的动画展示）
@@ -598,6 +601,7 @@ class VPRTempo(nn.Module):
         #   数值越高，表示匹配程度越高（脉冲发放越强）。
         # ================================================================================
         concatenated_output = torch.cat(outputs, dim=1)
+    
         
         return concatenated_output
         
@@ -698,12 +702,12 @@ def run_inference(models, model_name):
     #   filter           : 降采样步长（每 filter 帧取 1 帧）
     #   skip             : 开头跳过的帧数
     test_dataset = CustomImageDataset(
-        annotations_file=model.dataset_file, 
-        base_dir=model.data_dir,
-        img_dirs=model.query_dir,
-        transform=image_transform,
-        max_samples=model.query_places,
-        filter=model.filter,
+        annotations_file=model.dataset_file,  # CSV 文件路径，例如 ./vprtempo/dataset/nordland-fall.csv
+        base_dir=model.data_dir, # 数据集根目录，例如 ./vprtempo/dataset/
+        img_dirs=model.query_dir, # 查询图像文件夹列表，例如 ['nordland/fall/query/']
+        transform=image_transform, # 图像预处理函数实例
+        max_samples=model.query_places, # 最多加载的查询图像数，例如 750
+        filter=model.filter, # 降采样步长，例如 8（每 8 帧取 1 帧）
         skip=model.skip
     )
 
@@ -720,9 +724,9 @@ def run_inference(models, model_name):
     # persistent_workers = False ：
     #   每次 epoch 结束后关闭 worker 进程。推理只有一个 epoch，无需保持。
     # ================================================================================
-    if model.device == "mps":
+    if model.device == "mps": 
         num_workers = 0
-        persistent_workers = False
+        persistent_workers = False 
     else:
         num_workers = 4
         persistent_workers = False
@@ -744,5 +748,5 @@ def run_inference(models, model_name):
     #   因此不会分配用于反向传播的中间变量内存，显著降低显存占用。
     #   这对于纯推理任务（不需要梯度）是必须的优化。
     # ================================================================================
-    with torch.no_grad():
+    with torch.no_grad():  # 关闭梯度计算，节省显存
         model.evaluate(models, test_loader)

@@ -36,7 +36,7 @@
   - 公式 (8) Gamma 校正      → ProcessImage.__call__() Step 2
   - IV-A 数据预处理          → ProcessImage 完整流程
   - III-A 时序编码           → SetImageAsSpikes（幅度编码单脉冲）
-  - Patch Normalization      → PatchNormalisePad（局部 Z-score）
+  - Patch Normalization     → PatchNormalisePad（局部 Z-score）
 
 【包含类一览】
   1. GetPatches2D      — 2D 滑动窗口提取器（底层工具类）
@@ -88,7 +88,7 @@ from torch.utils.data import Dataset       # 【行级】PyTorch 数据集基类
 #   unfold(dim, size, step) 沿指定维度以步长 step 滑动，提取长度为 size 的窗口。
 #   先在 H 维度 unfold，再在 W 维度 unfold，最后 reshape 为 [patch_area, num_patches]。
 # ================================================================================
-class GetPatches2D:
+class GetPatches2D: 
     def __init__(self, patch_size, image_pad):
         # ---- 行级：保存 patch 的尺寸，例如 (15, 15) ----
         self.patch_size = patch_size
@@ -342,7 +342,7 @@ class SetImageAsSpikes:
 #   不同季节/天气下，同一场景的图像可能整体偏暗（阴天）或偏亮（晴天）。
 #   自适应 Gamma 根据图像均值调整对比度，使不同条件下的图像具有相似的动态范围。
 # ================================================================================
-class ProcessImage:
+class ProcessImage:  #TODO VPRTempoTrain常用
     def __init__(self, dims, patches):
         # ---- 行级：目标缩放尺寸 [H, W]，默认 [56, 56]，决定 SNN 输入神经元数量 ----
         self.dims = dims
@@ -465,8 +465,16 @@ class ProcessImage:
 #   对应的图像索引范围。
 # ================================================================================
 class CustomImageDataset(Dataset):
-    def __init__(self, annotations_file, base_dir, img_dirs, transform=None, target_transform=None,
-                 filter=1, skip=0, max_samples=None, test=True, img_range=None):
+    def __init__(self, 
+                 annotations_file, 
+                 base_dir, img_dirs, 
+                 transform=None, 
+                 target_transform=None,
+                 filter=1, 
+                 skip=0, 
+                 max_samples=None, 
+                 test=True, 
+                 img_range=None):
         # ---- 行级：图像预处理流水线实例（通常是 ProcessImage）----
         self.transform = transform
         # ---- 行级：标签预处理函数（本项目通常不使用）----
