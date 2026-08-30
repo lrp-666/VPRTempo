@@ -52,19 +52,107 @@ B1 vs B2 是 Gate 1 的关键对比：**两者用同一随机初始化、同一�
 RGB图 → ProcessImage(灰度→gamma→resize→PatchNorm→uint8→spike编码)
       → 展平 [1, 3136] → feature_layer(3136→6272) → output_layer(6272→500)
 
-【B2/B3 改动后】
+【B2/B3 改动后】（维度数字以 C=32, k=5, local WTA 4×4 主组合为例，依据 ADR-1）
 RGB图 → ProcessImage(同上) → 展平 [1, 3136]
       → 【新增】reshape 回 [1,1,56,56]
       → conv_layer_1: Conv2d(1→C1, k×k) + 阈值 + WTA + STDP/ITP   ← 无监督训练后冻结
       → (B3: conv_layer_2: Conv2d(C1→C2, k×k), 同上)
-      → flatten [1, C×H'×W']
-      → feature_layer(C·H'·W' → 2×C·H'·W') → output_layer(→500)
+      → 【ADR-1 强制】空间下采样：local WTA 的块 winner 图即 4×4 max-pool → [1,C,13,13]
+      → flatten [1, 5408]
+      → feature_layer(5408 → 10816) → output_layer(→500)
 ```
 
-### 1.2 必须意识到的三个结构性后果
-1. **feature_layer 输入维度变了**：从 3136 变为 C·H'·W'。`VPRTempoTrain.__init__` 里 `self.input = dims[0]*dims[1]`（VPRTempoTrain.py:161）要按 conv 输出尺寸重算。56×56、k=5、无 padding → H'=W'=52，C=32 → 输入 86528，feature 层 173056。注意显存/参数膨胀，这也是实验 1.5 效率表的一部分。
-2. **逐层训练框架天然兼容**：`train_new_model`（VPRTempoTrain.py:667）按 `layer_dict` 顺序逐层训练，已训练层走 `prev_layers` 的 no_grad 前向（VPRTempoTrain.py:429-434）。conv 层只要 `add_layer` 在最前，"训完冻结、后续层把它当前向"就是现成机制。
-3. **训练循环的 STDP 数学不同**：`train_model` 里调用的 `bn.calc_stdp` 是全连接版（向量 pre/post tile 成矩阵，blitnet.py:540-541）。卷积版要做 winner 选择、patch 提取、多 winner 聚合，必须新写 `calc_stdp_conv` 和 `train_conv_layer` 两个函数，**不要硬塞进 calc_stdp**（保持原函数不动，降低 B0 回归风险）。
+### 1.2 架构决策记录（ADR）—— 动工前必须拍板的三件事
+
+这三条不是"注意事项"，而是**不定下来就无法写代码的硬决策**。每条给出数据、候选方案、取舍与结论。后续 S2.x 卡片只引用 ADR 编号，不再重复论证。
+
+---
+
+#### ADR-1 维度链与空间下采样（强制项，不是可选项）
+
+**先把账算清楚**（56×56 输入、k=5、无 padding → H'=W'=52，C=32）：
+
+| 方案 | conv 输出 flatten | feature_layer 权重（dense fp32） | 可行性 |
+|---|---|---|---|
+| 不下采样，直接 flatten | 32×52×52 = 86,528 | 86,528 × 173,056 ≈ 1.5×10¹⁰ 参数 ≈ **60 GB** | ❌ 完全不可行 |
+| 4×4 空间下采样后 flatten | 32×13×13 = **5,408** | 5,408 × 10,816 ≈ 5.8×10⁷ ≈ 234 MB | ✅ 与 B0（3136×6272=19.7M）同量级 |
+
+注意 blitnet 的权重是**稠密存储**（稀疏连接体现在值上，矩阵本身 dense），且 `calc_stdp` 每样本还会 tile 出 [in,out] 全矩阵（blitnet.py:540-541）——60 GB 方案没有任何变通余地。**结论：conv 与 feature_layer 之间必须有空间下采样，这是架构的强制组成部分。**
+
+**候选下采样方案对比**：
+
+| 方案 | 说明 | 取舍 |
+|---|---|---|
+| (a) conv 加 stride | conv 本身 stride=4 | 感受野跳格采样，丢细节；STDP 的 patch 提取也变 stride 对齐，复杂度上升 |
+| (b) 独立 max-pool 层 | conv → clamp → 4×4 max-pool | 多一个模块，但与 WTA 解耦，WTA=none 时也必须用它 |
+| (c) **复用 local WTA 的块结构** | local WTA(4×4) 本来就是"每块取 winner"——块 winner 值拼起来就是一张 4×4 max-pooled 图 | ✅ 零额外计算，WTA 与池化同一操作，叙事优雅："竞争即池化" |
+
+**拍板**：主组合用 **(c)**——local WTA(4×4) 的 winner 值重排为 [1,C,13,13] 后 flatten（5,408 维）送 feature_layer；WTA=none 的消融格子用 **(b)** 独立 4×4 max-pool 补足同一维度链（保证消融只变 WTA 一个变量）；WTA=(a) stride 不采用。
+
+**WTA 模式与下游维度的耦合（必须写进论文设计说明）**：
+
+| WTA 模式 | 送 feature_layer 的张量 | 维度 | 风险 |
+|---|---|---|---|
+| global | 每通道 1 个 winner 值 → [C] 向量 | 32 | ⚠️ 信息瓶颈：整张图压成 32 个数，大概率掉点；若 global 在消融中意外胜出，需加 C 或改池化后再进主表 |
+| local(4×4) | 块 winner 图 [C,13,13] flatten | 5,408 | 主组合，与 B0 同量级 |
+| none | 全图 4×4 max-pool 后 flatten | 5,408 | 与 local 同维度，隔离 WTA 变量 |
+
+**feature = 2×input 规则保留**（VPRTempoTrain.py:162）：下采样后 input=5,408 → feature=10,816，保持与 B0 相同的层宽比，可比性优先。
+
+---
+
+#### ADR-2 层接口与框架接入：在两个遍历点加显式分发，不伪装接口
+
+**问题**：框架里有两处"对所有层一视同仁"的遍历，它们假设层是线性层：
+
+1. `train_model` 的 prev_layers 冻结前向（VPRTempoTrain.py:429-434）：`spikes = self.forward(spikes, prev_layer)` → 内部是 `layer.w(spikes)`（VPRTempoTrain.py:506），即 `F.linear`；
+2. `VPRTempo.py` 推理前向：同样的线性假设。
+
+**候选方案**：
+
+| 方案 | 做法 | 取舍 |
+|---|---|---|
+| (a) 伪装接口 | 给 ConvSNNLayer 包一个 `.w` 模块，forward 内部做 reshape→conv2d→flatten，让 `layer.w(spikes)` 原样成立 | 框架零改动；但 `clamp_spikes` 紧接着用 `layer.thr` 广播（blitnet.py:385）——conv 的 thr 是 [1,C,1,1] 每通道一个，flatten 后是 [1, C·H'·W']，**要么把 thr 复制 H'·W' 份（破坏"每通道一个阈值"的 ITP 语义），要么 clamp 语义错位**。伪装的代价是把空间语义压平，得不偿失 |
+| (b) **显式 isinstance 分发** | 在上述两个遍历点各加一个小分支：`isinstance(layer, ConvSNNLayer)` → 走 conv 前向路径（reshape→conv→减thr→clamp→WTA→池化→flatten）；否则走原路径 | 框架改动 = 2 处小分支，原路径一行不动；语义诚实，调试时一眼看清数据形状 |
+
+**拍板**：**(b)**。ConvSNNLayer 内部全程保持空间张量 [1,C,H',W']，**flatten 只发生在 conv→feature_layer 边界上的一次**。reshape [1,H*W]→[1,1,H,W] 发生在 conv 层入口（DataLoader 送来的仍是 `ProcessImage` 的平向量，dataset.py:437-439）。推理侧（VPRTempo.py）镜像同一分支，inference=True 的 ConvSNNLayer 只保留 w/thr（对齐 blitnet.py:101-111）。
+
+**连带决策**：
+- `train_new_model` 层循环（VPRTempoTrain.py:674）同样加 isinstance 分发 → 调 `train_conv_layer`（见 S2.5）；
+- 维度重算按 ADR-1 的池化后维度：`self.input = C × (H'/4) × (W'/4)`，在 `__init__` 里由 dims/k/C/pool 参数算出，硬编码零容忍；
+- 保存/加载：conv 层注册为 nn.Module 即自动进 state_dict（VPRTempoTrain.py:531-534）；推理侧构造层序必须与训练侧一致（同 layer_dict 顺序、同维度），模型命名加 `_CONVC<C>K<k>` 标记防覆盖。
+
+---
+
+#### ADR-3 conv-STDP 更新数学：blitnet 五步骤逐项裁决 + 向量化实现
+
+**blitnet `calc_stdp` 实际是五个步骤的捆绑**（blitnet.py:418-636），卷积版不能笼统说"照搬"，逐项裁决：
+
+| # | blitnet 步骤 | 卷积版裁决 | 理由 |
+|---|---|---|---|
+| 1 | STDP 兴奋更新 `(0.5−post)·Θ(pre)·Θ(post)`（:555-557） | **移植并改造**：作用对象从全连接矩阵元素 → winner 的核-patch 对；pre 端默认幅度加权（见 S2.3 的 Θ 失效分析） | 核心公式 |
+| 2 | STDP 抑制更新（:566-568） | **合并进通道级 E/I**：抑制通道的核用同一公式、反向学习率 | 卷积核权值共享，按元素分 E/I 会破坏感受野结构（S2.1） |
+| 3 | 符号钳制 [1e-6,10]（:581-584） | **改造**：[0,10]/[-10,0]，防止 0 被顶成 1e-6 破坏稀疏 | S2.3 已注明 |
+| 4 | ITP Δθ=η(Θ(x)−f)（:597-606） | **移植**：每神经元 → 每通道 | S2.4 |
+| 5 | Homeostasis 抑制稳态缩放（:608+，公式 4） | **默认关，留消融开关** | blitnet 需要它是因为全连接版**没有 WTA**、无发放上限控制；卷积版已有三重稳定机制（WTA 稀疏 + 每核保范数归一化 + ITP），先验证无 homeostasis 是否稳定，不稳定再开 |
+
+**向量化是硬性实现要求**：local WTA(4×4) 下每张图 winner 数 = C×(H'/4)×(W'/4) = 32×169 = **5,408 个**；Python 逐 winner 循环 × 1,000 图 × 2 epoch ≈ 1,080 万次迭代，不可行。必须：
+
+```python
+patches = F.unfold(pre_img, kernel_size=k)           # [1, k², L]，L=H'·W'
+win_flat = winners 的 (c, y·W'+x) 扁平索引            # [N_win]
+dK_all = eta * (0.5 - post_win)[:, None] * patches[0, :, win_flat].T  # [N_win, k²]
+# 按通道聚合（mean/sum）后一次性加进 layer.w.weight：
+layer.w.weight.data[:, 0].view(C, -1).index_add_ / scatter_mean_(0, win_channel_idx, dK_all)
+```
+
+Python 循环版只在 S2.3 的玩具验收测试里作为**正确性对照**（两版输出必须逐元素一致），正式训练走向量化路径。
+
+**内存对比（卖点素材，写给实验 1.5）**：全连接版每样本 tile 出 [in,out] = [5408, 10816] 全矩阵做更新；卷积版每样本只动 N_win×k² = 5408×25 个元素——**单样本更新量差 input 维度数量级**，这是"卷积 STDP 比全连接 STDP 便宜"的量化论据。
+
+---
+
+**三条 ADR 的相互依赖**：ADR-1 决定 feature_layer 维度（S2.5 的维度重算照此实现）；ADR-2 决定框架改动范围（两处 isinstance 分发 + 一处层循环分发，共 3 个小分支）；ADR-3 决定 `calc_stdp_conv` 的函数签名与性能预算。fork 会话实现 S2.x 时若发现与 ADR 冲突，**先回来改 ADR 并记录原因，再动代码**。
 
 ---
 
@@ -199,6 +287,8 @@ RGB图 → ProcessImage(同上) → 展平 [1, 3136]
 
 **验收**：global 模式每通道非零数 == 1；local == (H'/4)·(W'/4)；none 不变。存一张 mask 前后 feature map 对比图。
 
+**与 ADR-1 的耦合（实现时必须一起处理）**：WTA 模式决定送 feature_layer 的张量形态——local 模式直接把块 winner 值重排为 [1,C,H'/4,W'/4] 再 flatten（"竞争即池化"，零额外计算）；none 模式要补一个独立 4×4 max-pool 凑同一维度链；global 模式输出 [C] 向量（信息瓶颈风险已记录在 ADR-1，若消融中 global 意外胜出需重新设计下游维度）。
+
 ### S2.3 卷积 STDP 更新规则（本 idea 的核心公式）
 
 **背景与动机**：blitnet 普通 STDP（calc_stdp 分支二，blitnet.py:555-557）：
@@ -222,7 +312,9 @@ RGB图 → ProcessImage(同上) → 展平 [1, 3136]
 3. **聚合**（`agg_mode`，消融变量）：同通道所有 winner 的 dK 取 **mean**（首选：更新幅度不随 winner 数漂移）或 **sum**（对照），加到 `layer.w.weight[c, 0]`。
 4. **符号钳制**：语义照搬 blitnet.py:581-584，按 S2.1 的通道级掩码。细则偏离：blitnet 把兴奋权重 clamp 到 [1e-6, 10]，会把 0 顶成 1e-6、破坏稀疏；卷积版改为兴奋核 `clamp(min=0, max=10)`、抑制核 `clamp(min=-10, max=0)`，只保证符号不翻转。**偏离处在论文注明理由。**
 5. **归一化**：每次更新后，被更新的核做**保范数 L1 归一化**（恢复到更新前的核范数），防止幅度漂移（对应 addWeights 的归一化思想）。
-6. 发放率调制（blitnet.py:480-484 的 `mpre = pre / fire_rate`）：默认**关**，留作附录消融。
+6. **Homeostasis**：默认**关**，留消融开关 `conv_homeostasis`。裁决理由见 ADR-3：blitnet 需要它是因为全连接版没有 WTA；卷积版已有 WTA 稀疏 + 保范数归一化 + ITP 三重稳定。若玩具测试发现核范数/发放率失控，再打开。
+7. 发放率调制（blitnet.py:480-484 的 `mpre = pre / fire_rate`）：默认**关**，留作附录消融。
+8. **向量化实现（硬性要求，ADR-3）**：local WTA 下每图 winner 数 = C×(H'/4)×(W'/4) ≈ 5,408，Python 逐 winner 循环不可行。正式路径用 `F.unfold` 取全部 patch → 按 winner 扁平索引 gather → 批量算 dK → `index_add_`/`scatter_mean_` 按通道聚合后一次性写入 `layer.w.weight`。Python 循环版仅作玩具测试的正确性对照（两版输出须逐元素一致）。
 
 **验收**：玩具测试——固定输入竖直边缘图，训练若干步后对应核在边缘位置权重显著增大（数值断言）；更新只发生在 winner 通道；1000 步内核范数曲线稳定不发散。
 
@@ -248,15 +340,17 @@ RGB图 → ProcessImage(同上) → 展平 [1, 3136]
 
 **详细操作**：
 1. `VPRTempoTrain.__init__` 加分支：`args.frontend == 'conv_stdp'` 时，在 add feature_layer **之前** add conv 层（layer_dict 顺序 0,1,2 → 自动先训 conv）。
-2. **维度重算**：conv 输出 (C, H', W') → `self.input = C*H'*W'`，feature_layer dims 随之改（VPRTempoTrain.py:161-162）。`--dims` 语义不变（仍是图像尺寸）。
-3. `train_new_model` 层循环加类型分发：`isinstance(layer, ConvSNNLayer)` → 调新 `train_conv_layer(...)`；否则走原 `train_model`。**原路径一行不改。**
+2. **维度重算（照 ADR-1）**：`self.input = C × (H'/pool) × (W'/pool)`（主组合 = 32×13×13 = 5,408），由 dims/k/C/pool 参数在 `__init__` 算出，硬编码零容忍；feature_layer dims 随之改（VPRTempoTrain.py:161-162），feature = 2×input 规则保留。`--dims` 语义不变（仍是图像尺寸）。
+3. **框架改动范围（照 ADR-2，共 3 处小分支，原路径一行不改）**：
+   - `train_new_model` 层循环（VPRTempoTrain.py:674）：`isinstance(layer, ConvSNNLayer)` → 调 `train_conv_layer`；
+   - `train_model` 的 prev_layers 冻结前向（VPRTempoTrain.py:429-434）：conv 层走 conv 前向路径（reshape→conv→减thr→clamp→WTA→池化→flatten）；
+   - `VPRTempo.py` 推理前向：同一分支镜像，inference=True 加载。
 4. 新函数 `train_conv_layer(train_loader, layer, model)`（结构镜像 train_model，VPRTempoTrain.py:327-485）：
    - epoch 数用 `conv_epoch`（独立参数，默认 2）而非 `self.epoch`；
-   - 每样本：reshape [1,H*W]→[1,1,H,W] → 前向（S2.1）→ WTA（S2.2）→ `calc_stdp_conv`（S2.3）→ ITP（S2.4）→ 退火；
+   - 每样本：reshape [1,H*W]→[1,1,H,W] → 前向（S2.1）→ WTA（S2.2）→ `calc_stdp_conv` 向量化路径（S2.3）→ ITP（S2.4）→ 退火；
    - 退火复用 `_anneal_learning_rate`，但 **T 单独 = 数据库图像数 × conv_epoch**（conv 层步数与 feature/output 层不同，共用 self.T 会退火错误；self.T 的计算见 VPRTempoTrain.py:181-184）。
 5. **多模块共享前端**：conv 层只在 module 0 上训一次，权重拷给其余模块（`load_state_dict`）。理由：①省算力；②叙事"通用视觉特征"，模块间特征空间一致，feature_layer 学到的东西跨模块可比；③若每模块各训，模块边界特征空间跳变，无依据地伤害输出拼接。**论文明确写此设计决策。**（500 地主实验是单模块，此条先为大规模实验预留。）
-6. 推理侧（VPRTempo.py）加同样分支：reshape → conv → clamp → flatten，inference=True 加载。
-7. 保存：save_model 的 state_dict 机制（VPRTempoTrain.py:509-540）自动覆盖新层；模型命名加前端标记如 `..._CONVC32K5_...`，防覆盖 B0 模型。
+6. 保存：save_model 的 state_dict 机制（VPRTempoTrain.py:509-540）自动覆盖新层；推理侧构造层序必须与训练侧一致（同 layer_dict 顺序、同维度）；模型命名加 `_CONVC<C>K<k>` 标记，防覆盖 B0 模型。
 
 **验收**：端到端跑通训练 + 推理（C=16, k=3, conv_epoch=1, 500 地）；保存/加载往返后推理一致；**B0 回归**：不带 `--frontend` 时行为与 main 逐比特一致。
 
@@ -272,7 +366,7 @@ RGB图 → ProcessImage(同上) → 展平 [1, 3136]
 
 **背景与动机**：回答"增益是不是只是加了深度"。两层逐层无监督（conv1 训完冻结 → conv2）是 BLiTNet 逐层哲学的自然延伸，layer_dict 机制再次免费复用。
 
-**详细操作**：`--frontend conv_stdp2`：conv1: 1→C1；conv2: C1→C2，可加 2×2 stride/pooling 控制维度——**必须先算清 flatten 后维度**，否则 feature_layer 参数量爆炸。类型分发天然支持多层（按 layer_dict 顺序各训各的）。
+**详细操作**：`--frontend conv_stdp2`：conv1: 1→C1；conv2: C1→C2。维度链照 ADR-1 逐层算清并写进配置（建议：conv1 后不池化保持分辨率，conv2 后统一 4×4 池化 → flatten = C2×13×13，与 B2 同维度进 feature_layer，保证 B2/B3 下游可比）；如需 conv 间下采样，用 stride=2 并在配置里显式声明。**禁止先写代码后算维度**——feature_layer 参数量随 flatten 维度平方增长（ADR-1 的账）。类型分发天然支持多层（按 layer_dict 顺序各训各的）。
 
 **验收**：双层训练完成、维度链正确；轨 B 数字可进主表。
 
