@@ -1,164 +1,392 @@
-# IDEA1: Conv-STDP 卷积前端 for VPRTempo —— 详细实施规划
+# IDEA1: Conv-STDP 卷积前端 for VPRTempo —— 总体方案与实验设计（主控文档）
 
-> 目标：在 VPRTempo 的 spike 编码之后、`feature_layer` 之前插入无监督 Conv-STDP 卷积前端，
-> 用**双轨评测**隔离验证"空间归纳偏置 + 无 BP 可塑性"对 VPR 的实际贡献。
-> 代码引用基于 main 分支当前版本（VPRTempoTrain.py / blitnet.py / metrics.py / dataset.py）。
-
----
-
-## 0. 创新点一句话
-
-VPRTempo 把图像展平成向量后做全连接 SNN，丢失了空间结构；本文证明一个**单步幅度域 Conv-STDP 前端**（无多步仿真、无 BP）能学到可解释的 oriented-edge 卷积核，并通过双轨评测精确定位其增益来源与失配环节。
-
----
-
-## 阶段 1.1：基础设施与数据通路（3–4 周）
-
-### 1.1.1 分支与目录策略
-- 本目录 `IDEA1-covstdp/` 为实验工作区：`src/`（新模块代码）、`experiments/`（配置与脚本）、`results/`（结果表与图）。
-- 功能开发在 `feat/convstdp-*` 分支进行，稳定后合回 main；不动 `vprtempo/` 原有类的默认行为，所有新行为走开关参数。
-
-### 1.1.2 数据通路（主实验）
-- **Nordland 500 地**：参考 = spring + fall（拼接为数据库），查询 = summer。
-- 沿用现有 CLI 参数：`--dataset nordland --database_places 500 --query_places 500`，CSV 标注用 `vprtempo/dataset/nordland-*.csv`。
-- **3 个 seed**（{0,1,2} 或 {42,123,2024}，固定写入实验配置），每个格子报 mean±std。
-- 补充数据集（应对审稿）：Oxford RobotCar 子集 450 地，重跑主表，成本约 1 天。
-
-### 1.1.3 PatchNorm 开关化
-- 位置：`vprtempo/src/dataset.py:422`（`PatchNormalisePad(self.patches)` 调用处）。
-- 加 `--patch_norm {on,off}` 参数（默认 on，保持现有行为不变）；off 时跳过步骤 4，直接缩放编码。这是实验 1.4 的前提。
-
-### 1.1.4 轨 B 评测脚本：`eval_retrieval.py`（新写）
-- 流程：加载训练好的前端 → 对数据库/查询图像提取特征（conv 前端输出或 feature_layer 输出）→ flatten → cosine 相似度矩阵 S → 复用 `metrics.py:134` 的 `recallAtK(S, GT, K)`。
-- 复用现有 GT 构造逻辑（单位矩阵 + `GT_tolerance` 对角膨胀 + `skip` 偏移），保证与轨 A 完全可比。
-- 输出 PrettyTable：Recall@1/5/10/15/20/25，格式与轨 A 一致。
+> **本文档的用途**：这是整个 idea/paper 的"主控设计文档"。后续会 fork 出多个实现会话，
+> 每个 fork 会话只负责本文档中的一个步骤卡片（S1.x / S2.x / S3.x）。
+> 因此每个步骤卡片都写成自包含的：**背景与动机（为什么）→ 前置依赖 → 详细操作（干什么）→ 验收标准**。
+>
+> 代码引用基于 main 分支当前版本。关键已核实锚点：
+> `blitnet.py`（SNNLayer / addWeights / clamp_spikes / calc_stdp）、
+> `VPRTempoTrain.py`（train_model 循环 / _anneal_learning_rate / train_new_model）、
+> `dataset.py`（ProcessImage / PatchNormalisePad）、`metrics.py:134`（recallAtK）。
 
 ---
 
-## 阶段 1.2：ConvSNNLayer 实现（4–6 周）
+## 0. 论文定位与核心论点（先想清楚故事，再动手）
 
-新类 `ConvSNNLayer`（建议放 `IDEA1-covstdp/src/conv_snn_layer.py`，成熟后再考虑并入 `vprtempo/src/`）。
+### 0.1 问题
+VPRTempo 把图像经 `ProcessImage` 展平成 [H*W] 向量后直接进全连接 SNN（`feature_layer: 3136→6272`，稀疏随机连接 p=[0.1,0.5]）。**空间局部结构被完全丢弃**：feature_layer 的每个神经元看的是随机 10% 像素的线性组合，没有任何平移共享和局部感受野。
 
-### 1.2.1 前向传播（单步幅度域）
-- 输入：spike 编码后的图像幅度（[1,H,W]，与 `SetImageAsSpikes` 输出对齐）。
-- `F.conv2d` 一步卷积 → 加兴奋/抑制贡献 → 与阈值 `thr` 比较 → Θ(·) 得到 [C_out, H', W'] 二值（或幅度）活动。
-- **不做多步 LIF 仿真**，与 VPRTempo 单步编码自洽——这是与 SpikingJelly/bindsnet conv-STDP 的核心差异（related work 论点）。
+### 0.2 主张（claim）
+在 spike 编码与 feature_layer 之间插入一个**无监督 Conv-STDP 前端**：
+- 卷积核提供空间归纳偏置（局部感受野 + 权值共享）；
+- 学习规则是**单步幅度域 STDP**（与 VPRTempo 的单步编码自洽），不是 SpikingJelly/bindsnet 那种多步 trace-based LIF 仿真——无多步开销；
+- 全程无 BP。
 
-### 1.2.2 兴奋/抑制通道结构
-- 照搬 blitnet 的 E/I 思想：核权重拆兴奋掩码（正）与抑制掩码（负），比例沿用 blitnet 默认。
-- 初始化：随机核（与 B1 的 Random Conv 用**同一初始化分布**，保证 B1 vs B2 只差"训没训"）。
+### 0.3 论证策略（双轨评测，本文方法论核心）
+光看端到端 Recall 无法定位增益/损失来自哪里，所以每个变体都跑两条轨：
 
-### 1.2.3 WTA 竞争（消融变量，两变体都实现）
-- **Global WTA**：每通道全图 argmax，仅 1 个 winner。
-- **Local WTA**：feature map 切不重叠 4×4 块，每块 1 个 winner。
-- **无 WTA**：对照组。
-- winner 位置之外的后层活动置零（mask），保证 STDP 只发生在 winner 的 receptive field 上。
+- **轨 A（经 output layer）**：完整训练 → `run_inference` → Recall@K。回答："对完整系统有没有帮助？"
+- **轨 B（raw feature retrieval）**：前端输出 → flatten → cosine 最近邻 → `recallAtK`。绕开 spike-forcing 读出，回答："encoder 本身学没学到好特征？"
 
-### 1.2.4 卷积 STDP 更新规则
-- 对每个 winner：取 receptive field 对应前层 patch `pre_patch ∈ [1,1,k,k]` 与 winner 后层幅度 `post`（标量），按 blitnet 原规则：
+两条轨的四种组合对应四种结论，其中"轨B升、轨A不升"是最有分析价值的结果（特征有效但与 spike-forcing 读出失配），这是预留的退路故事（见 §6）。
 
-  ```
-  ΔK_c = η_STDP · (0.5 − post) · Θ(pre_patch) · Θ(post)
-  ```
-
-- **多 winner 聚合**（消融变量）：同通道多个 winner 的 ΔK_c 取 mean（首选）或 sum，更新共享卷积核。
-- **符号钳制**：照搬 `blitnet.py:581-584` —— 兴奋核 clamp 到 [1e-6, 10]，抑制核 clamp 到 [-10, -1e-6]。
-- **归一化**：每次更新后对每通道核做 L1 或 L2 归一化（对应 blitnet 权重归一化思想），防止核幅度漂移。
-
-### 1.2.5 ITP 阈值可塑性（卷积版）
-- 把 `blitnet.py:597-606` 的 Δθ = η_ITP·(Θ(x) − f) 从"每神经元"改为"**每通道**"：用该通道 feature map 平均发放率代替单神经元活动。
-- 目标发放率 f 每通道一个，在 [0.2, 0.9] 线性分配（沿用 `blitnet.py:164-167` 的思想）。
-- 阈值保持非负（`blitnet.py:606`）。
-
-### 1.2.6 接入逐层训练框架
-- 训练顺序：conv_layer（无监督 STDP，遍历数据库若干 epoch）→ **冻结** → feature_layer → output_layer。
-- 复用 `train_new_model()`（`VPRTempoTrain.py:591`）的 `layer_dict` 排序机制（`VPRTempoTrain.py:667` 按序逐层训练）：conv 层 `add_layer` 在最前，`trained_layers` 机制天然支持"前层冻结只做前向"。
-- 学习率退火复用 `_anneal_learning_rate`（`VPRTempoTrain.py:275`），conv 层的 T 单独定义：**T = 数据库图像数 × conv_epoch**。
-- **多模块决策**：conv 前端在所有模块间共享一份（用全部数据库图像训一次），不每模块各训——省算力，且叙事更合理（"通用视觉特征"）。论文中明确写出此设计。
-
----
-
-## 阶段 1.3：评测协议与实验矩阵
-
-### 1.3.1 统一双轨评测（每个变体都做）
-| 轨道 | 路径 | 指标 |
-|---|---|---|
-| 轨 A | 完整训练 → `run_inference` 现有流程 | Recall@1/5/10/25（`metrics.py:134`） |
-| 轨 B | 前端输出 → flatten → cosine 最近邻（`eval_retrieval.py`） | 同上 |
-
-轨 B 绕开 output layer 的 spike-forcing 读出，是**干净隔离 encoder 质量**的关键。
-
-### 1.3.2 主实验矩阵（实验 1.1，Table 1；每配置 × 3 seeds）
-| 编号 | 前端 | 前端训练 | 评测 |
+### 0.4 对照组设计逻辑（为什么必须是 B0–B4 五个）
+| 编号 | 前端 | 训练 | 排除的备择解释 |
 |---|---|---|---|
-| B0 | 无（原 VPRTempo） | — | 轨A + 轨B |
-| B1 | Random Conv | 冻结不训 | 轨A + 轨B |
-| B2 | Conv-STDP（1 层） | 无监督 STDP | 轨A + 轨B |
-| B3 | Conv-STDP（2 层） | 逐层无监督 | 轨A + 轨B |
-| B4 | 同结构 CNN | BP（经 output layer 反传或线性读出） | 轨A + 轨B |
+| B0 | 无（原 VPRTempo） | — | 基线 |
+| B1 | Random Conv | 冻结 | "随便加卷积都涨"（随机特征经常是强基线，必须排除） |
+| B2 | Conv-STDP 1层 | 无监督 STDP | 核心处理组 |
+| B3 | Conv-STDP 2层 | 逐层无监督 | "增益只是多了一层深度" |
+| B4 | 同结构 CNN | BP | 性能上界参照系，回答"无 BP 代价多大" |
 
-主组合：C=32, k=5 起步；通道数 {16,32,64} × 核大小 {3,5,7} 选 6–9 组，不做全网格。
-
-### 1.3.3 消融（实验 1.3 / 1.4）
-- **WTA**：global / local(4×4) / 无 WTA（Table 2）。
-- **winner 聚合**：mean / sum（Table 2）。
-- **PatchNorm 交互**（实验 1.4，Table 3，本篇最独特分析）：2×4 设计 = PatchNorm {on,off} × 前端 {B0,B1,B2,B3}。
-  - 假设：PatchNorm on 时 Conv-STDP 增益收窄（局部高通已提取边缘），off 时增益放大。两个方向都有结论可写。
-- **conv epoch** ∈ {1,2,4}（附录）。
-
-### 1.3.4 决策门（提前承诺判据，写进实验计划）
-- **Gate 1**：轨 B 上 B2 > B1（超出 3-seed 标准差）→ STDP 确实学到结构。
-- **Gate 2**：轨 A 上 B2/B3 > B0 → 空间归纳偏置对 VPRTempo 整体有帮助。
-- **退路**：Gate 1 过、Gate 2 不过 → 论文转向分析型定位："STDP 特征有效但与 spike-forcing 读出失配"，顺势进入创新点 2（读出适配），投稿转向 Frontiers/期刊。
+B1 vs B2 是 Gate 1 的关键对比：**两者用同一随机初始化、同一结构，唯一差别是 STDP 训没训**。
 
 ---
 
-## 实验 1.2：卷积核可视化（Figure 2，低成本高说服力）
-- 训练后 [C_out,1,k,k] 核画成 grid，与随机初始化核并排。
-- 预期：STDP 核呈 oriented edge / 中心-外周结构。即使量化提升不大，"核出现可解释结构"本身是 Gate 1 的定性证据。
-- 量化指标：Gabor 拟合优度（R²）、方向选择性分布（方向直方图集中度）、稀疏度（核近零元素比例）。
+## 1. 全局架构改动总览
 
-## 实验 1.5：效率数据（Table 4，必须有）
-- 训练时间、单查询前向 FLOPs / 内存、参数量，对比 B0/B2/B4。
-- VPRTempo 系读者看重效率；强调 Conv-STDP 单步规则 vs 多步 trace-based LIF 的开销差异。
+### 1.1 数据流（改动前 → 改动后）
 
----
+```
+【B0 现状】
+RGB图 → ProcessImage(灰度→gamma→resize→PatchNorm→uint8→spike编码)
+      → 展平 [1, 3136] → feature_layer(3136→6272) → output_layer(6272→500)
 
-## 审稿人必问 + 预先准备
-1. **"和 SpikingJelly/bindsnet 的 conv-STDP 有什么区别？"**
-   → related work 一小节：那些是多步 trace-based LIF STDP；本文是单步幅度域规则，与 VPRTempo 编码自洽，无多步仿真开销。实验上加一行 SpikingJelly conv-STDP 前端参照（用阶段 1.2 之前的原型代码，不白做）。
-2. **"为什么不用端到端 BP？"**
-   → 论文定位就是研究无 BP 的可行边界，B4 就是参照系；不声称超越 CNN。
-3. **"只有一个数据集？"**
-   → Oxford RobotCar 子集（450 地）重跑主表，成本约 1 天。
+【B2/B3 改动后】
+RGB图 → ProcessImage(同上) → 展平 [1, 3136]
+      → 【新增】reshape 回 [1,1,56,56]
+      → conv_layer_1: Conv2d(1→C1, k×k) + 阈值 + WTA + STDP/ITP   ← 无监督训练后冻结
+      → (B3: conv_layer_2: Conv2d(C1→C2, k×k), 同上)
+      → flatten [1, C×H'×W']
+      → feature_layer(C·H'·W' → 2×C·H'·W') → output_layer(→500)
+```
 
----
-
-## 篇幅与时间线
-- 目标会议：ICRA / RA-L，6 页 + 参考文献。实验 1.1 + 1.2 为核心，1.3 / 1.4 挑进正文，其余附录。
-- 时间线（全职投入）：
-  | 阶段 | 内容 | 时长 |
-  |---|---|---|
-  | 1.1 | 基础设施 + 数据通路 + eval_retrieval.py | 3–4 周 |
-  | 1.2 | ConvSNNLayer 实现与调通 | 4–6 周 |
-  | 1.3 | 主实验 + 消融 | 4 周 |
-  | — | 写作 | 3 周 |
-  | 合计 | | **约 3.5–4.5 个月** |
-
-- 风险备案：Gate 2 不过但 Gate 1 过 → 改分析型故事（见 1.3.4 退路），投 Frontiers/期刊更稳。
+### 1.2 必须意识到的三个结构性后果
+1. **feature_layer 输入维度变了**：从 3136 变为 C·H'·W'。`VPRTempoTrain.__init__` 里 `self.input = dims[0]*dims[1]`（VPRTempoTrain.py:161）要按 conv 输出尺寸重算。56×56、k=5、无 padding → H'=W'=52，C=32 → 输入 86528，feature 层 173056。注意显存/参数膨胀，这也是实验 1.5 效率表的一部分。
+2. **逐层训练框架天然兼容**：`train_new_model`（VPRTempoTrain.py:667）按 `layer_dict` 顺序逐层训练，已训练层走 `prev_layers` 的 no_grad 前向（VPRTempoTrain.py:429-434）。conv 层只要 `add_layer` 在最前，"训完冻结、后续层把它当前向"就是现成机制。
+3. **训练循环的 STDP 数学不同**：`train_model` 里调用的 `bn.calc_stdp` 是全连接版（向量 pre/post tile 成矩阵，blitnet.py:540-541）。卷积版要做 winner 选择、patch 提取、多 winner 聚合，必须新写 `calc_stdp_conv` 和 `train_conv_layer` 两个函数，**不要硬塞进 calc_stdp**（保持原函数不动，降低 B0 回归风险）。
 
 ---
 
-## 执行检查清单（按序）
-- [ ] 1.1.3 PatchNorm 开关化（dataset.py，加 `--patch_norm`）
-- [ ] 1.1.4 `eval_retrieval.py`（轨 B：特征 → cosine → `recallAtK`）
-- [ ] 1.1.2 Nordland 500 地 spring,fall→summer 通路跑通 B0 基线（3 seeds）
-- [ ] 1.2.1–1.2.5 `ConvSNNLayer`（前向 / E-I 掩码 / WTA×3 / STDP+聚合 / ITP）
-- [ ] 1.2.6 接入 `train_new_model` 逐层训练，conv 前端跨模块共享
-- [ ] B1（Random Conv 冻结）通路验证
-- [ ] 实验 1.2 核可视化脚本（grid + Gabor 拟合 + 方向分布 + 稀疏度）
-- [ ] 实验 1.1 主表 B0–B4 × 3 seeds（双轨）
-- [ ] 实验 1.3 / 1.4 消融表
-- [ ] 实验 1.5 效率表
-- [ ] Oxford RobotCar 450 地复跑主表
-- [ ] SpikingJelly conv-STDP 参照行
+## 2. 阶段划分与依赖图
+
+```
+阶段1（基础设施，不依赖任何新算法）
+  S1.1 分支与实验配置系统 ──┐
+  S1.2 PatchNorm 开关化      ├─→ S1.4 eval_retrieval.py（轨B）
+  S1.3 seed 管理            ─┘         │
+                              S1.5 B0 基线双轨复现 ←──┘
+阶段2（核心算法，依赖阶段1的数据通路）
+  S2.1 ConvSNNLayer 前向 → S2.2 WTA → S2.3 卷积STDP → S2.4 卷积ITP
+        → S2.5 接入逐层训练 → S2.6 B1对照 → S2.7 B3两层 → S2.8 B4 CNN参照
+阶段3（实验，依赖阶段2全部变体）
+  S3.1 核可视化(实验1.2) → S3.2 主表(实验1.1) → S3.3 消融(1.3/1.4)
+        → S3.4 效率表(1.5) → S3.5 ORC复跑 + SpikingJelly参照
+```
+
+**关键路径**：S1.2 → S1.4 → S1.5 → S2.1→S2.5 → S3.2。一切围绕先打通 B0 双轨基线。
+
+---
+
+## 阶段 1：基础设施与数据通路
+
+### S1.1 分支策略与实验配置系统
+
+**背景与动机**：实验矩阵是 ~10 配置 × 3 seed × 2 轨 × 2 数据集，手工敲 CLI 参数必然出错且不可复现。论文级实验需要"配置即代码"。
+
+**详细操作**：
+1. 建分支 `feat/convstdp-base`（从 main 切出）。所有阶段 1 改动在此分支，完成后合回 main。
+2. 在 `IDEA1-covstdp/experiments/` 建配置目录，每个实验一个 YAML/JSON（或 Python dict 文件），字段对应 main.py 的全部 CLI 参数 + 新增参数（`seed`, `patch_norm`, `frontend`, `wta_mode`, `wta_block`, `agg_mode`, `conv_channels`, `conv_kernel`, `conv_epoch`）。
+3. 写一个薄封装 `IDEA1-covstdp/experiments/run_exp.py`：读配置 → 调 main.py 的入口函数 → 把 stdout/结果表存入 `IDEA1-covstdp/results/<exp_id>/seed_<n>/`。
+4. 结果文件统一命名 `<exp_id>__seed<n>__trackA.json` / `__trackB.json`，内含 Recall@1/5/10/15/20/25 + 配置全文（自描述，防止日后对不上号）。
+
+**验收**：用一个配置跑通 B0 的 `pixi run eval` 等效流程，结果落盘且可重复（同一 seed 两次运行结果一致）。
+
+### S1.2 PatchNorm 开关化
+
+**背景与动机**：`ProcessImage.__call__`（dataset.py:352）第 4 步固定调用 `PatchNormalisePad`（dataset.py:422-424），输出值域 [-1,1] 再映射到 uint8。PatchNorm 本身是**局部高通滤波**（局部 Z-score 去掉局部均值），提取的正是边缘/纹理——这和 Conv-STDP 要学的东西高度重叠。所以 PatchNorm on/off 与前端类型的交互（实验 1.4）是本文最独特的一张表，前提是 PatchNorm 必须可关。
+
+**详细操作**：
+1. main.py 加参数 `--patch_norm`（on/off 选择，**默认 on**——不改变现有行为）。
+2. `ProcessImage.__init__` 增加 `patch_norm=True` 参数；`__call__` 中第 4 步包条件分支：
+   - on：现状不变（PatchNorm → [-1,1] → uint8 映射，dataset.py:429）。
+   - off：跳过 PatchNorm，直接把 resize 后的图 clamp 到 [0,255] 转 uint8，接第 6 步 spike 编码。**注意**：off 分支要跳过第 5 步的 `(1+x)/2` 映射（那是为 [-1,1] 值域设计的）。
+3. 调用链上传参：main.py → VPRTempoTrain/VPRTempo 构造 → `train_new_model`/`run_inference` 里的 `ProcessImage(model.dims, model.patches, ...)`（VPRTempoTrain.py:623-625 和 VPRTempo.py 对应位置）。
+4. 模型文件名中加入 patch_norm 标记，避免 on/off 模型互相覆盖（参考现有命名约定 `<dirs>_VPRTempo_IN..._FN..._DB....pth`）。
+
+**验收**：同配置 on/off 各跑一次 eval，Recall@K 出现可记录差异；off 时 B0 不退化到不可用（若退化严重，本身即是实验 1.4 的一个发现）。
+
+### S1.3 seed 管理与可复现性
+
+**背景与动机**：结论判据是"B2 − B1 > 3-seed 联合标准差"，std 的质量决定结论可信度。当前代码有多处隐式随机源：`addWeights` 里 `np.random.rand` 稀疏化（blitnet.py:308）、`torch.normal_` 初始化（blitnet.py:290）、`DataLoader(shuffle=True)`（VPRTempoTrain.py:727-733）。**不固定 seed，3-seed 实验毫无意义。**
+
+**详细操作**：
+1. 加 `--seed` 参数；入口处 `torch.manual_seed / np.random.seed / random.seed` 三件套 + `generator=torch.Generator().manual_seed(seed)` 传给 DataLoader。
+2. 三个实验 seed 固定为 {0, 1, 2}，写死进实验配置。
+3. 注意 blitnet.py:308 用的是 `np.random`（不是 torch），必须一起固定。
+4. CUDA 下接受非完全确定性（cudnn benchmark），在论文里注明；seed 固定到"初始化与数据顺序可复现"级别即可。
+
+**验收**：同一配置同一 seed 连跑两次（CPU），模型参数一致或 Recall 完全一致。
+
+### S1.4 轨 B 评测脚本 `eval_retrieval.py`
+
+**背景与动机**：这是双轨方法论的半壁江山，也是审稿人眼中"分析严谨性"的来源。轨 A 的 Recall 混入了 spike-forcing 读出层的影响；轨 B 把前端输出直接做最近邻检索，干净隔离 encoder 质量。**必须对每个变体（B0–B4、每个消融格子）都能跑。**
+
+**详细操作**：
+1. 新文件 `IDEA1-covstdp/experiments/eval_retrieval.py`，结构镜像 `run_inference`（VPRTempo.py:669）：建数据集 → 加载模型 → 遍历前向。差别在最后一步。
+2. **特征提取点**（每个变体一个指定层，写进配置）：
+   - B0：feature_layer 输出（clamp 后）。
+   - B1/B2/B3：conv 前端最后一层输出（clamp 后）→ flatten。**同时**记录 feature_layer 输出作为第二个特征点（附录分析用）。
+   - B4：CNN backbone 输出。
+3. 特征 L2 归一化 → 计算 Q×D cosine 相似度矩阵 S。
+4. GT 构造**必须与轨 A 逐比特一致**：复用 `run_inference` 中的 GT 逻辑（单位矩阵 + `GT_tolerance` 对角膨胀 + `skip` 偏移）——最稳妥的做法是把那段 GT 构造抽成一个共用函数两边调用，而不是抄一遍（抄会漂移）。
+5. 调 `recallAtK(S, GT, K)`（metrics.py:134），K ∈ {1,5,10,15,20,25}，PrettyTable 输出 + JSON 落盘。
+6. 效率红利：轨 B 不需要训练 output_layer，conv 前端训完即可评——**调 conv 超参时先只看轨 B**，迭代周期大幅缩短。
+
+**验收**：对 B0 跑轨 B，Recall@K 量级合理（raw 特征检索通常显著低于轨 A，正常）；同一特征矩阵手工抽查若干最近邻正确。
+
+### S1.5 B0 基线双轨复现（阶段 1 的出口，Gate 0）
+
+**背景与动机**：在任何新代码落地前，必须有可信的 B0 双轨基线数字。它是所有后续对比的分母，也是回归参照。
+
+**详细操作**：
+1. 数据：Nordland，参考 = spring + fall（`--database_dirs spring,fall`，现有代码的 `location_repeat=2` 机制，VPRTempoTrain.py:177-179），查询 = summer；`--database_places 500 --query_places 500`（500 地 = 单模块，不触发 max_module 拆分，先避开多模块复杂度）。
+2. 3 seeds × （轨A: 训练 + eval）× （轨B: S1.4 脚本）。
+3. 结果填入 `results/table_baseline_b0.md`，同时记录训练/推理耗时（给实验 1.5 垫底）。
+4. PatchNorm on/off 各一组（共 2×3=6 格），提前给实验 1.4 的第一列。
+
+**验收**：轨 A Recall@1 达到仓库 README/论文报告的同量级。若明显偏低，先排查环境/数据问题——**不要带着坏基线进入阶段 2**。
+
+---
+
+## 阶段 2：ConvSNNLayer 实现（核心算法）
+
+> 新文件：`IDEA1-covstdp/src/conv_snn_layer.py`（`ConvSNNLayer` 类 + `calc_stdp_conv` 函数 + `train_conv_layer` 函数）。
+> 风格对齐 blitnet.py：MIT 头、模块级注释块、行级注释。
+> **设计总原则：接口对齐 SNNLayer，内部数学独立。** 对齐的部分：设备处理、thr/fire_rate 初始化、state_dict 可序列化；独立的部分：前向是 conv2d 不是 linear，STDP 是 patch-wise 不是 tile。
+
+### S2.1 前向传播（单步幅度域）
+
+**背景与动机**：VPRTempo 的"spike"其实是单步幅度值（SetImageAsSpikes 输出 [0,1] 幅度，clamp 上限 0.9，blitnet.py:385），没有膜电位时间演化。conv 前端必须遵守同一约定——**单步卷积 + 减阈值 + clamp**。这是与 SpikingJelly/bindsnet 多步 trace-based LIF 的本质区别，也是 related work 的立足点，绝不能为了"更 SNN"而引入多步仿真。
+
+**详细操作**：
+1. `ConvSNNLayer(nn.Module)`，构造参数对齐 SNNLayer 风格：`in_channels, out_channels, kernel_size, thr_range=[0,0.5], fire_rate=[0.2,0.9], ip_rate=0.15, stdp_rate=0.005, p=[p_exc,p_inh], device, inference`。
+2. 权重：`self.w = nn.Conv2d(in_ch, out_ch, k, bias=False)`。E/I 结构照搬 blitnet 思想但**按核（输出通道）分配兴奋/抑制角色**而非按元素：初始化时按 p_exc 比例随机指定若干通道为兴奋核、其余为抑制核，掩码形状 [C_out]。理由：卷积核权值共享，按元素稀疏会破坏感受野内的结构学习；按通道分 E/I 保留 BLiTNet 的 E/I 平衡思想且适配卷积。**这个对 blitnet 的偏离要在论文里写明并给理由。**
+3. 初始化用 `addWeights` 的卷积版：正态采样（mean=范围中点，std=跨度/6，3σ 原则，blitnet.py:277-280）→ 按符号裁剪（blitnet.py:298-301）→ **每核 L1 归一化**（对应 blitnet.py:319-325，归一化单位从"列"变"核"）。
+4. 前向：
+   ```python
+   def forward(self, x):            # x: [1, 1, H, W]（由调用方从 [1, H*W] reshape）
+       z = self.w(x)                # [1, C, H', W']
+       z = z - self.thr             # thr: [1, C, 1, 1]，每通道一个阈值
+       z = torch.clamp(z, 0.0, 0.9) # 对齐 clamp_spikes（blitnet.py:385）
+       return z
+   ```
+5. 推理模式（inference=True）只保留 w 和 thr，对齐 SNNLayer 推理分支（blitnet.py:101-111）。
+
+**验收**：随机初始化的层前向输出形状正确；发放比例合理（不恒 0 不恒饱和，否则调 thr_range）；sanity 脚本固化在 `experiments/sanity_conv_forward.py`。
+
+### S2.2 WTA 竞争机制（三变体，消融变量）
+
+**背景与动机**：为什么需要 WTA？若没有竞争，feature map 上所有位置都发放、都触发 STDP，核会被所有位置的 patch 平均成"全局均值模板"，学不出选择性。WTA 制造稀疏发放（呼应 BLiTNet 稀疏哲学），保证每次更新只来自最有信心的位置。做三个变体是因为"全局唯一 winner 太稀疏 vs 局部 winner 密度适中"孰优无法先验判断——这是 Table 2 的消融轴。
+
+**详细操作**：
+1. 参数 `wta_mode ∈ {'global','local','none'}`，`wta_block=4`。
+2. **global**：每通道 argmax，仅该位置保留原值，其余置零（flat argmax → scatter 成 mask → `z * mask`）。
+3. **local**：不重叠 4×4 块，每块一个 winner。实现用 reshape/unfold 分块 → 块内 argmax → 置零其余 → 拼回。H',W' 不被 4 整除时**裁掉右/下余数边缘**（简单、无 padding 伪影，论文注明）。56 输入 k=5 → H'=52，52/4=13 整除，主组合无此问题。
+4. **none**：不置零（对照组）。
+5. winner 的 (通道, y, x) 坐标列表要返回/缓存，供 S2.3 patch 提取。
+6. mask 作用于 clamp 后的活动，保证下游 feature_layer 看到的也是稀疏表征（否则 WTA 只影响学习不影响表征，实验逻辑不干净）。
+
+**验收**：global 模式每通道非零数 == 1；local == (H'/4)·(W'/4)；none 不变。存一张 mask 前后 feature map 对比图。
+
+### S2.3 卷积 STDP 更新规则（本 idea 的核心公式）
+
+**背景与动机**：blitnet 普通 STDP（calc_stdp 分支二，blitnet.py:555-557）：
+`ΔW = η·(0.5−post)·Θ(pre)·Θ(post)`，按元素作用于全连接矩阵。卷积版要回答三个新问题：①更新谁（答：只更新 winner 感受野对应的核-patch 对，由 S2.2 保证）；②多 winner 的更新怎么合并（答：聚合，消融变量）；③E/I 与归一化怎么迁移（答：符号钳制 + 每核归一化）。`(0.5−post)` 项的含义（post<0.5 增强、>0.5 减弱，blitnet.py:550-552）保留——它让 winner 响应趋向中等幅度，自稳定防爆。
+
+**详细操作**：
+1. 新函数 `calc_stdp_conv(pre_img, post_map, winners, layer)`：
+   - `pre_img`: [1,1,H,W]；`post_map`: WTA 后 [1,C,H',W']；`winners`: S2.2 坐标列表。
+2. 对每个 winner (c, y, x)：
+   ```python
+   pre_patch = pre_img[0, 0, y:y+k, x:x+k]   # [k,k]，无 padding 时感受野直接对齐
+   post = post_map[0, c, y, x]                # 标量
+   dK = layer.eta_stdp * (0.5 - post) * (pre_patch > 0).float() * float(post > 0)
+   ```
+3. **聚合**（`agg_mode`，消融变量）：同通道所有 winner 的 dK 取 **mean**（首选：更新幅度不随 winner 数漂移）或 **sum**（对照），加到 `layer.w.weight[c, 0]`。
+4. **符号钳制**：语义照搬 blitnet.py:581-584，按 S2.1 的通道级掩码。细则偏离：blitnet 把兴奋权重 clamp 到 [1e-6, 10]，会把 0 顶成 1e-6、破坏稀疏；卷积版改为兴奋核 `clamp(min=0, max=10)`、抑制核 `clamp(min=-10, max=0)`，只保证符号不翻转。**偏离处在论文注明理由。**
+5. **归一化**：每次更新后，被更新的核做**保范数 L1 归一化**（恢复到更新前的核范数），防止幅度漂移（对应 addWeights 的归一化思想）。
+6. 发放率调制（blitnet.py:480-484 的 `mpre = pre / fire_rate`）：默认**关**，留作附录消融。
+
+**验收**：玩具测试——固定输入竖直边缘图，训练若干步后对应核在边缘位置权重显著增大（数值断言）；更新只发生在 winner 通道；1000 步内核范数曲线稳定不发散。
+
+### S2.4 卷积版 ITP 阈值可塑性
+
+**背景与动机**：blitnet 的 ITP（Δθ = η_ITP·(Θ(x)−f)，blitnet.py:597-606）是每神经元的，配套每神经元不同目标发放率（blitnet.py:164-167 线性分配；理论依据：低发放率神经元学稀疏特异特征、高发放率学泛化特征）。卷积层没有"每神经元"，自然映射为**每通道一个阈值、每通道一个目标发放率**：通道级发放率分化让不同通道变成"稀疏特异检测器"和"通用纹理检测器"。没有 ITP，WTA+STDP 容易导致少数通道垄断 winner（死通道）。
+
+**详细操作**：
+1. `fire_rate` 形状 [1,C,1,1]，[0.2, 0.9] 线性分配（对齐 blitnet.py:164-167 的 fstep 逻辑）。
+2. 每个训练样本：
+   ```python
+   observed = (post_map > 0).float().mean(dim=(2,3), keepdim=True)  # 每通道实际发放率
+   layer.thr.data += layer.eta_ip * (observed - layer.fire_rate)
+   layer.thr.data.clamp_(min=0)   # 对齐 blitnet.py:606
+   ```
+3. 死通道监控：日志记录每通道 winner 计数直方图；某通道整 epoch 0 winner 时报警（ITP 失效信号，调 η_ITP 或 f 范围）。
+
+**验收**：训练后各通道经验发放率与目标 f 的秩相关显著为正；无整 epoch 0-winner 死通道。
+
+### S2.5 接入逐层训练框架
+
+**背景与动机**：不重写训练框架，而是**插入**它——`train_new_model` 的 layer_dict 排序（VPRTempoTrain.py:667）+ prev_layers 冻结前向（VPRTempoTrain.py:429-434）已是逐层训练的完整实现。改框架收益低风险高（B0 回归），插入收益相同风险低。
+
+**详细操作**：
+1. `VPRTempoTrain.__init__` 加分支：`args.frontend == 'conv_stdp'` 时，在 add feature_layer **之前** add conv 层（layer_dict 顺序 0,1,2 → 自动先训 conv）。
+2. **维度重算**：conv 输出 (C, H', W') → `self.input = C*H'*W'`，feature_layer dims 随之改（VPRTempoTrain.py:161-162）。`--dims` 语义不变（仍是图像尺寸）。
+3. `train_new_model` 层循环加类型分发：`isinstance(layer, ConvSNNLayer)` → 调新 `train_conv_layer(...)`；否则走原 `train_model`。**原路径一行不改。**
+4. 新函数 `train_conv_layer(train_loader, layer, model)`（结构镜像 train_model，VPRTempoTrain.py:327-485）：
+   - epoch 数用 `conv_epoch`（独立参数，默认 2）而非 `self.epoch`；
+   - 每样本：reshape [1,H*W]→[1,1,H,W] → 前向（S2.1）→ WTA（S2.2）→ `calc_stdp_conv`（S2.3）→ ITP（S2.4）→ 退火；
+   - 退火复用 `_anneal_learning_rate`，但 **T 单独 = 数据库图像数 × conv_epoch**（conv 层步数与 feature/output 层不同，共用 self.T 会退火错误；self.T 的计算见 VPRTempoTrain.py:181-184）。
+5. **多模块共享前端**：conv 层只在 module 0 上训一次，权重拷给其余模块（`load_state_dict`）。理由：①省算力；②叙事"通用视觉特征"，模块间特征空间一致，feature_layer 学到的东西跨模块可比；③若每模块各训，模块边界特征空间跳变，无依据地伤害输出拼接。**论文明确写此设计决策。**（500 地主实验是单模块，此条先为大规模实验预留。）
+6. 推理侧（VPRTempo.py）加同样分支：reshape → conv → clamp → flatten，inference=True 加载。
+7. 保存：save_model 的 state_dict 机制（VPRTempoTrain.py:509-540）自动覆盖新层；模型命名加前端标记如 `..._CONVC32K5_...`，防覆盖 B0 模型。
+
+**验收**：端到端跑通训练 + 推理（C=16, k=3, conv_epoch=1, 500 地）；保存/加载往返后推理一致；**B0 回归**：不带 `--frontend` 时行为与 main 逐比特一致。
+
+### S2.6 B1：Random Conv 冻结对照
+
+**背景与动机**：随机卷积 + 只训读出层是惊人强的基线（random features 文献）。若 B2 ≈ B1，"STDP 学到东西"不成立，Gate 1 失败。B1 与 B2 **必须共享同一随机初始化**（同 seed 同 init），唯一变量是"训没训"。
+
+**详细操作**：`--frontend random_conv`：结构同 B2，但给 ConvSNNLayer 加 `frozen=True` 标志，train_new_model 分发时直接跳过其训练（进 trained_layers）。配置固定 B1/B2 同 init seed。
+
+**验收**：B1 可前向可双轨评测；同 seed 下 B1 初始核与 B2 训前初始核逐元素一致。
+
+### S2.7 B3：两层 Conv-STDP
+
+**背景与动机**：回答"增益是不是只是加了深度"。两层逐层无监督（conv1 训完冻结 → conv2）是 BLiTNet 逐层哲学的自然延伸，layer_dict 机制再次免费复用。
+
+**详细操作**：`--frontend conv_stdp2`：conv1: 1→C1；conv2: C1→C2，可加 2×2 stride/pooling 控制维度——**必须先算清 flatten 后维度**，否则 feature_layer 参数量爆炸。类型分发天然支持多层（按 layer_dict 顺序各训各的）。
+
+**验收**：双层训练完成、维度链正确；轨 B 数字可进主表。
+
+### S2.8 B4：同结构 CNN + BP 参照
+
+**背景与动机**：审稿人必问"为什么不用端到端 BP"。标准回答："本文研究无 BP 的可行边界"——需要 B4 作上界参照系量化"边界离上界多远"。不声称超越 CNN。
+
+**详细操作**：
+1. `experiments/train_cnn_ref.py`：同数据通路（同 ProcessImage、同 500 地），Conv(k,C)→ReLU→(可选第二层)→flatten→Linear(500 类)，交叉熵 + Adam + 早停。
+2. 评测以**轨 B 协议为主**（backbone 特征 → cosine → recallAtK）保证与 B0–B3 可比；其监督读出准确率作为"轨 A 等价"附注，论文里说明协议差异。
+3. 训练时间/FLOPs/参数量一并记录（实验 1.5 需要 B4 列）。
+
+**验收**：B4 显著优于 B0（否则 CNN 参照本身有问题，先排查）；数字进主表。
+
+---
+
+## 阶段 3：实验
+
+### S3.1 实验 1.2：卷积核可视化与量化分析（Figure 2）
+
+**为什么先做它**：成本最低（训完的核直接画图）、反馈最快——**它是 STDP 是否工作的第一道定性证据**。若核没有结构，不必烧主表算力，直接回头查 S2.3。
+
+**详细操作**：
+1. `experiments/viz_kernels.py`：加载 B2（及 B3 各层）模型 → `conv_layer.w.weight` [C,1,k,k] → 每核归一化到 [0,1] → matplotlib grid；并排画同 seed 随机初始核（B1）。
+2. 量化三指标：
+   - **Gabor 拟合优度**：每核拟合 2D Gabor（scipy.optimize 最小二乘），报 R² 分布（中位数 + IQR）；B2 应显著高于 B1（Mann-Whitney）。
+   - **方向选择性**：拟合成功核的方向角直方图 + 合成长度（resultant vector length）。
+   - **稀疏度**：|w| < 0.1·max 的元素占比，B1 vs B2。
+3. 输出：`results/fig2_kernels.png` + `results/table_kernel_stats.json`。
+
+**验收**：图可直接进论文草稿；B2 vs B1 统计差异可见（完全没有 → 亮红灯回查 S2.3）。
+
+### S3.2 实验 1.1：主表（Table 1）
+
+**详细操作**：
+1. 矩阵：B0–B4 × 3 seeds × 双轨 × PatchNorm=on（off 归实验 1.4）。主组合 C=32, k=5, conv_epoch=2, WTA=local(4×4), agg=mean。
+2. 执行：run_exp.py 批量 → `experiments/make_table1.py` 汇总 mean±std。
+3. 统计判据（提前承诺）：B2−B1（轨B）、B2−B0（轨A）报差值 ± 联合 std；3 seed 太少不做强显著性声明，以效应量为主，措辞谨慎。
+
+**验收**：Table 1 完整，Gate 1 / Gate 2 判定明确（§6）。
+
+### S3.3 实验 1.3 / 1.4：消融
+
+**详细操作**：
+1. **Table 2（WTA × 聚合）**：{global, local, none} × {mean, sum}，固定 C=32/k=5/B2，双轨。意义：WTA 稀疏度控制 STDP 样本效率，聚合方式控制更新尺度——两者都可能"差到不可用"，必须扫。
+2. **C × k 主组合**：{16,32,64} × {3,5,7} 选 6–9 组（对角线选法：16/3, 32/3, 32/5, 32/7, 64/5, 64/7），轨 B 优先（便宜），代表组合补轨 A。
+3. **Table 3（PatchNorm 2×4，本文最独特分析）**：PatchNorm {on,off} × {B0,B1,B2,B3}，双轨。假设：on 时 Conv-STDP 增益收窄（局部高通已提取边缘，conv 没新东西可学）、off 时增益放大。**两个方向都有结论可写**：收窄 → "VPRTempo 预处理已隐式完成卷积前端的工作"；放大 → "conv 前端与朴素编码互补"。按实际方向组织叙事。
+4. **conv epoch ∈ {1,2,4}**（附录）：验证 STDP 收敛与过拟合（无监督也会过拟合：核塌缩 / winner 垄断）。
+
+**验收**：三张表齐全，每张至少一段可直接写进论文的观察。
+
+### S3.4 实验 1.5：效率表（Table 4）
+
+**背景与动机**：VPRTempo 的卖点是快，审稿人对"加 conv 前端后还快不快"极度敏感。B0 / B2 / B4 三列：训练墙钟时间（同硬件）、单查询前向 FLOPs、峰值内存、参数量。
+
+**详细操作**：`experiments/benchmark.py`：FLOPs 手工算（conv: 2·C_in·C_out·k²·H'·W'；linear: 2·in·out）或 torch.profiler；训练时间从 run_exp 日志提取；显存 `torch.cuda.max_memory_allocated`。
+
+**验收**：Table 4 三列齐全；B2 相对 B0 的开销增幅有量化数字（叙事素材："x% 开销换 y 点 Recall"）。
+
+### S3.5 补充实验（审稿预案驱动）
+
+1. **Oxford RobotCar 450 地复跑主表核心配置**（B0/B1/B2 + PatchNorm on/off，3 seeds）。回答"只有一个数据集？"。约 1 天算力，用现有 `orc-*.csv` 通路。
+2. **SpikingJelly conv-STDP 参照行**：回答"和现有 SNN 库的区别"。用阶段 2 原型改最小多步 LIF conv-STDP 前端（T=10 步），只跑轨 B 主配置 1 seed。不追求赢它，追求"单步规则以 ~1/T 开销达到可比性能"的对比叙事。
+3. 两项进附录，主文各一句话引用。
+
+---
+
+## 6. 决策门与风险（提前承诺，防止事后移动球门）
+
+| 门 | 判据 | 通过含义 | 不通过的动作 |
+|---|---|---|---|
+| Gate 0（阶段1出口） | B0 双轨基线复现到论文量级 | 基础设施可信 | 不进阶段 2，先排查 |
+| Gate 1 | 轨B：B2 > B1，差值 > 3-seed 联合 std | STDP 学到结构（核可视化佐证） | 回查 S2.3/S2.4；仍不过则整个 idea 重估 |
+| Gate 2 | 轨A：B2 或 B3 > B0 | 空间归纳偏置帮助完整系统 | **退路启动**：改分析型故事 |
+
+**退路剧本（Gate 1 过、Gate 2 不过）**：故事改为分析型——"无 BP 卷积可塑性学到何种特征、为何与 spike-forcing 读出失配"。轨 B 正结果 + 核可视化 + PatchNorm 交互分析仍完整成立，失配本身是贡献（顺势引出创新点 2"读出适配"）。投稿目标从 ICRA/RA-L 转向 Frontiers/期刊。
+
+---
+
+## 7. 篇幅与时间线
+
+- 目标：ICRA / RA-L，6 页 + 参考文献。正文：实验 1.1（Table 1）+ 1.2（Figure 2）+ 1.3/1.4 精选各一张表；其余附录。
+- 时间线（全职）：
+
+| 阶段 | 内容 | 时长 |
+|---|---|---|
+| 1 | S1.1–S1.5 基础设施 + 双轨基线 | 3–4 周 |
+| 2 | S2.1–S2.8 ConvSNNLayer + 全部变体 | 4–6 周 |
+| 3 | S3.1–S3.5 实验 | 4 周 |
+| — | 写作 | 3 周 |
+| 合计 | | **3.5–4.5 个月** |
+
+---
+
+## 8. Fork 会话指引（给未来的实现会话）
+
+每个 fork 会话开工时，把对应步骤卡片贴给它，并遵守：
+
+1. **一次只实现一个 S 编号卡片**；卡片的"验收标准"是该会话的完成定义。
+2. 新代码放 `IDEA1-covstdp/src/` 或 `experiments/`；对 `vprtempo/` 的修改必须**默认行为不变**（B0 回归：不带新参数时输出与 main 一致）。
+3. 每个卡片完成后：更新本文件清单勾选 + `results/` 落盘 + 提交到功能分支，**不直接合 main**（main 只收阶段级合并）。
+4. 分支命名：`feat/convstdp-s<编号>-<短名>`，如 `feat/convstdp-s21-conv-forward`。
+5. 所有实验必须能由 `experiments/run_exp.py` + 配置复现，禁止"手工跑了一次"的孤儿结果进表。
+
+### 总检查清单
+- [ ] S1.1 配置系统与 run_exp.py
+- [ ] S1.2 PatchNorm 开关化
+- [ ] S1.3 seed 三件套
+- [ ] S1.4 eval_retrieval.py（轨 B）
+- [ ] S1.5 B0 双轨基线（Gate 0）
+- [ ] S2.1 ConvSNNLayer 前向
+- [ ] S2.2 WTA 三变体
+- [ ] S2.3 calc_stdp_conv（聚合 + 钳制 + 归一化）
+- [ ] S2.4 卷积 ITP
+- [ ] S2.5 接入 train_new_model + 推理侧 + 共享前端
+- [ ] S2.6 B1 Random Conv 对照
+- [ ] S2.7 B3 两层
+- [ ] S2.8 B4 CNN 参照
+- [ ] S3.1 核可视化（Figure 2）
+- [ ] S3.2 主表（Table 1，Gate 1/2 判定）
+- [ ] S3.3 消融（Table 2/3 + 附录）
+- [ ] S3.4 效率（Table 4）
+- [ ] S3.5 ORC 复跑 + SpikingJelly 参照
