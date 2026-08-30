@@ -204,6 +204,11 @@ RGB图 → ProcessImage(同上) → 展平 [1, 3136]
 **背景与动机**：blitnet 普通 STDP（calc_stdp 分支二，blitnet.py:555-557）：
 `ΔW = η·(0.5−post)·Θ(pre)·Θ(post)`，按元素作用于全连接矩阵。卷积版要回答三个新问题：①更新谁（答：只更新 winner 感受野对应的核-patch 对，由 S2.2 保证）；②多 winner 的更新怎么合并（答：聚合，消融变量）；③E/I 与归一化怎么迁移（答：符号钳制 + 每核归一化）。`(0.5−post)` 项的含义（post<0.5 增强、>0.5 减弱，blitnet.py:550-552）保留——它让 winner 响应趋向中等幅度，自稳定防爆。
 
+**关键设计决策（pre 端用 Θ 门控还是幅度加权）**：PatchNorm on 时，平坦区域像素被映射为 127.5（幅度 0.5，见 dataset.py:429），**输入永不静默，`Θ(pre_patch)>0` 几乎恒真**——Θ 门控形同虚设，更新量只剩 `(0.5−post)` 驱动，核学不到"哪里亮"的区分信息。PatchNorm off 时暗像素→0，Θ 才有区分度。因此：
+- **默认形式（幅度加权）**：`dK = η·(0.5−post)·pre_patch·Θ(post)`。blitnet 原文语义上也说得通——spike forcing 分支本来就用幅度 `pre` 而非 `Θ(pre)`（blitnet.py:484/494）；背景 0.5 与边缘 1.0 自然产生不同更新量。
+- **Θ 门控版**作为消融变量 `pre_mode ∈ {'amp','heaviside'}`，与 PatchNorm on/off 交叉——这给实验 1.4 的交互结果提供一个**机制层面解释假设**：on/off 增益差异可能部分源于 pre 门控失效。
+- 备选（不默认）：conv 输入前先减 0.5 做中心化。偏离原通路，仅在幅度加权仍失效时考虑。
+
 **详细操作**：
 1. 新函数 `calc_stdp_conv(pre_img, post_map, winners, layer)`：
    - `pre_img`: [1,1,H,W]；`post_map`: WTA 后 [1,C,H',W']；`winners`: S2.2 坐标列表。
@@ -211,7 +216,8 @@ RGB图 → ProcessImage(同上) → 展平 [1, 3136]
    ```python
    pre_patch = pre_img[0, 0, y:y+k, x:x+k]   # [k,k]，无 padding 时感受野直接对齐
    post = post_map[0, c, y, x]                # 标量
-   dK = layer.eta_stdp * (0.5 - post) * (pre_patch > 0).float() * float(post > 0)
+   pre_term = pre_patch if pre_mode == 'amp' else (pre_patch > 0).float()
+   dK = layer.eta_stdp * (0.5 - post) * pre_term * float(post > 0)
    ```
 3. **聚合**（`agg_mode`，消融变量）：同通道所有 winner 的 dK 取 **mean**（首选：更新幅度不随 winner 数漂移）或 **sum**（对照），加到 `layer.w.weight[c, 0]`。
 4. **符号钳制**：语义照搬 blitnet.py:581-584，按 S2.1 的通道级掩码。细则偏离：blitnet 把兴奋权重 clamp 到 [1e-6, 10]，会把 0 顶成 1e-6、破坏稀疏；卷积版改为兴奋核 `clamp(min=0, max=10)`、抑制核 `clamp(min=-10, max=0)`，只保证符号不翻转。**偏离处在论文注明理由。**
@@ -315,6 +321,7 @@ RGB图 → ProcessImage(同上) → 展平 [1, 3136]
 2. **C × k 主组合**：{16,32,64} × {3,5,7} 选 6–9 组（对角线选法：16/3, 32/3, 32/5, 32/7, 64/5, 64/7），轨 B 优先（便宜），代表组合补轨 A。
 3. **Table 3（PatchNorm 2×4，本文最独特分析）**：PatchNorm {on,off} × {B0,B1,B2,B3}，双轨。假设：on 时 Conv-STDP 增益收窄（局部高通已提取边缘，conv 没新东西可学）、off 时增益放大。**两个方向都有结论可写**：收窄 → "VPRTempo 预处理已隐式完成卷积前端的工作"；放大 → "conv 前端与朴素编码互补"。按实际方向组织叙事。
 4. **conv epoch ∈ {1,2,4}**（附录）：验证 STDP 收敛与过拟合（无监督也会过拟合：核塌缩 / winner 垄断）。
+5. **编码探索（附录，可选）**：主实验一律用原始单步幅度编码（`SetImageAsSpikes`，像素/255），理由：①B0–B3 可比性，唯一变量是 conv 前端；②换多步编码（发放率/时延）会摧毁"无多步仿真"卖点——那是 SpikingJelly 参照行（S3.5）的领地。可选探索：**ON/OFF 双通道编码**（签名信号拆正/负两通道，类 DoG 中心-外周），与 conv-STDP 预期的中心-外周核结构天然契合；做则只跑 B2 主配置轨 B，作为附录一小节。注意它会改变输入通道数（1→2），不进主表。
 
 **验收**：三张表齐全，每张至少一段可直接写进论文的观察。
 
