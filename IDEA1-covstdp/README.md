@@ -10,7 +10,8 @@
 - **双轨评测**：
   - 轨 A：完整训练 → 现有 `run_inference` → Recall@K；
   - 轨 B：`eval_retrieval.py` 提特征 → cosine → `recallAtK`（`metrics.py:134`），隔离 encoder 质量。
-- **对照组**：B0 原模型 / B1 Random Conv 冻结 / B2 Conv-STDP 1层 / B3 Conv-STDP 2层 / B4 CNN+BP 上界。
+- **对照组**：B0 原模型 / B1 Random Conv 冻结 / B2 Conv-STDP 1层 / B3 Conv-STDP 2层 / B4 CNN+BP 上界 / B5 手工 Gabor 滤波器组。
+- **叙事脊柱**：改进阶梯 R0→R4（每引入一个机制验证一次边际改进），消融矩阵进附录；竞争态势与相关工作定位见 PLAN §0.5。
 - **决策门**：Gate 0 基线复现；Gate 1 = 轨B B2>B1（超 3-seed std）；Gate 2 = 轨A B2/B3>B0。
 - **主数据**：Nordland 500 地 spring,fall→summer，每格 3 seeds × mean±std；补 Oxford RobotCar 450 地。
 
