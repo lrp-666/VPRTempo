@@ -96,10 +96,11 @@ B1 vs B2 是 Gate 1 的关键对比：**两者用同一随机初始化、同一�
 |---|---|---|---|
 | 全连接 SNN + STDP（识别） | Diehl & Cook 2015（Front. Comput. Neurosci.） | MNIST ~95%，全连接、无卷积、无空间结构 | 我们补空间归纳偏置 |
 | 卷积 SNN + STDP（识别） | Kheradpisheh et al. 2018（Neural Networks 99:56-67）；Mozafari et al. 2018/2019（reward-modulated）；Tavanaei & Maida 2016/2017 | 深层 conv SNN 做物体识别；**多步时延编码 + trace-based STDP**；第一层常为手工 DoG | 我们是单步幅度域、无多步开销；且任务是 VPR 不是识别 |
-| VPR 专用 SNN | Hussaini et al. RA-L 2022（VPRSNN, arXiv:2109.06452）；Modular SNNs ICRA 2023；arXiv:2311.13186；**VPRTempo ICRA 2024（本文基座）** | 全连接 SNN 做 VPR，权重神经元分配 / 模块化 / 时序编码 | **全部是全连接，没有人给 VPR-SNN 加过卷积前端**——这就是本文的空位 |
+| VPR 专用 SNN（全连接） | Hussaini et al. RA-L 2022（VPRSNN, arXiv:2109.06452）；Modular SNNs ICRA 2023；arXiv:2311.13186；**VPRTempo ICRA 2024（本文基座）** | 全连接 SNN 做 VPR，权重神经元分配 / 模块化 / 时序编码。**已核实：VPRSNN 与 VPRTempo 同为 28×28 输入 + 7×7 patch norm**（QVPR 系口径一致，外部对比干净） | 无空间归纳偏置，我们补卷积前端 |
+| 卷积 SNN for VPR（BP 路线） | **LoCS-Net**（Akçal et al. 2025, Frontiers in Neurorobotics, 10.3389/fnbot.2024.1490267） | 端到端卷积 SNN 做 VPR：56×56 灰度输入、3 conv + FC place 层；**BP 训练**（rate 近似 LIF → 推理转脉冲 LIF 的 ANN-to-SNN 转换路线，含多步仿真）；Nordland P@100%R 78.6%（vs SNN SOTA 73.0%）、ORC 45.7%（vs 20.2%）；Kapoho Bay 神经形态部署 | "卷积 SNN 做 VPR"的位置已被占，但走的是 BP + 多步路线。**我们的空位精确化为：第一个无 BP 局部可塑性的 VPR 卷积前端**；LoCS-Net 同时是外部对比行和 56×56 附录对照的存在理由 |
 | 并发工作预警 | arXiv:2607.13584（2026-07，rate 编码 + snnTorch 离散 STDP 做 VPR） | 100 地规模、rate 编码、多步 | 需要读一遍，在 related work 里划界：多步 rate vs 单步幅度；规模与编码方式均不同 |
 
-**一句话定位**：第一条把"卷积前端 + 无 BP 局部可塑性"带进 VPR 任务、并以双轨协议隔离 encoder 与读出贡献的工作。竞争态势结论：**空位真实存在**，但窗口期有限（并发工作已出现），时间线不宜拖。
+**一句话定位**：第一条把"卷积前端 + **无 BP** 局部可塑性"带进 VPR 任务、并以双轨协议隔离 encoder 与读出贡献的工作（LoCS-Net 已占据"卷积 SNN + BP"位置，本文不与其拼性能上界，而是占据"无 BP 可行边界 + 机制可解释性"位置）。竞争态势结论：**空位真实存在但比预想窄**，措辞必须精确到"无 BP"；窗口期有限（并发工作已出现），时间线不宜拖。
 
 ### 0.6 增量验证框架（改进阶梯）——让论文是"论文"而不是消融报告
 
@@ -305,17 +306,22 @@ layer.w.weight.data += layer.eta_stdp * dK
 
 ### S1.4 轨 B 评测脚本 `eval_retrieval.py`
 
-**背景与动机**：这是双轨方法论的半壁江山，也是审稿人眼中"分析严谨性"的来源。轨 A 的 Recall 混入了 spike-forcing 读出层的影响；轨 B 把前端输出直接做最近邻检索，干净隔离 encoder 质量。**必须对每个变体（B0–B4、每个消融格子）都能跑。**
+**背景与动机**：这是双轨方法论的半壁江山，也是审稿人眼中"分析严谨性"的来源。轨 A 的 Recall 混入了 spike-forcing 读出层的影响；轨 B 把前端输出直接做最近邻检索，干净隔离 encoder 质量。**必须对每个变体（B0–B5、每个消融格子）都能跑。**
+
+**指标决策（全文统一，提前拍板）**：
+- **主指标 Recall@1/5/10/25**（`recallAtK`）——与 VPRTempo 原论文口径一致，外部可比；
+- **互补主指标 recall@100%precision + PR 曲线**（`metrics.py` 的 `recallAt100precision` / `createPR` 现成，`--PR_curve` 开关已有）——threshold-free，衡量相似度矩阵本身的可分性；R@1 只看 top-1 猜没猜对，在 3-seed 小样本和轨 B（cosine 检索）上，R@100%P 往往比 R@1 更能区分两个 encoder 的差距；
+- 不再堆其他性能指标（AUC/F1 在 VPR 社区不流行）；效率指标归 Table 4，核分析指标（Gabor R² 等）是机制证据，三者分工清晰。
 
 **详细操作**：
 1. 新文件 `IDEA1-covstdp/experiments/eval_retrieval.py`，结构镜像 `run_inference`（VPRTempo.py:669）：建数据集 → 加载模型 → 遍历前向。差别在最后一步。
 2. **特征提取点**（每个变体一个指定层，写进配置）：
    - B0：feature_layer 输出（clamp 后）。
-   - B1/B2/B3：conv 前端最后一层输出（clamp 后）→ flatten。**同时**记录 feature_layer 输出作为第二个特征点（附录分析用）。
+   - B1/B2/B3/B5：conv 前端最后一层输出（clamp 后）→ flatten。**同时**记录 feature_layer 输出作为第二个特征点（附录分析用）。
    - B4：CNN backbone 输出。
 3. 特征 L2 归一化 → 计算 Q×D cosine 相似度矩阵 S。
 4. GT 构造**必须与轨 A 逐比特一致**：复用 `run_inference` 中的 GT 逻辑（单位矩阵 + `GT_tolerance` 对角膨胀 + `skip` 偏移）——最稳妥的做法是把那段 GT 构造抽成一个共用函数两边调用，而不是抄一遍（抄会漂移）。
-5. 调 `recallAtK(S, GT, K)`（metrics.py:134），K ∈ {1,5,10,15,20,25}，PrettyTable 输出 + JSON 落盘。
+5. 调 `recallAtK(S, GT, K)`（metrics.py:134），K ∈ {1,5,10,15,20,25}；同时输出 `recallAt100precision` 与 PR 曲线数据，PrettyTable 输出 + JSON 落盘。
 6. 效率红利：轨 B 不需要训练 output_layer，conv 前端训完即可评——**调 conv 超参时先只看轨 B**，迭代周期大幅缩短。
 
 **验收**：对 B0 跑轨 B，Recall@K 量级合理（raw 特征检索通常显著低于轨 A，正常）；同一特征矩阵手工抽查若干最近邻正确。
@@ -515,11 +521,12 @@ pre_term = (pre_patch - 0.5) if pre_mode == 'centered' else \
 
 **详细操作**：
 1. 矩阵：B0–B5 × 3 seeds × 双轨 × PatchNorm=on（off 归实验 1.4）。主组合 C=32, k=5, conv_epoch=2, WTA=local(4×4), agg=mean, pre_mode=centered。B5（Gabor 滤波器组）无需训练，3 seeds 只影响下游 feature/output 层初始化。
-2. 执行：run_exp.py 批量 → `experiments/make_table1.py` 汇总 mean±std。
-3. 统计判据（提前承诺）：B2−B1（轨B）、B2−B0（轨A）报差值 ± 联合 std；3 seed 太少不做强显著性声明，以效应量为主，措辞谨慎。
-4. **B2 vs B5 单段分析**（主表自带的小节素材）：学习 vs 手工设计，三种结果的叙事预案见 §0.4。
+2. 指标：Recall@1/5/10/25 为主 + recall@100%precision 互补（指标决策见 S1.4），PR 曲线图进正文。
+3. 执行：run_exp.py 批量 → `experiments/make_table1.py` 汇总 mean±std。
+4. 统计判据（提前承诺）：B2−B1（轨B）、B2−B0（轨A）报差值 ± 联合 std；3 seed 太少不做强显著性声明，以效应量为主，措辞谨慎。
+5. **B2 vs B5 单段分析**（主表自带的小节素材）：学习 vs 手工设计，三种结果的叙事预案见 §0.4。
 
-**验收**：Table 1 完整，Gate 1 / Gate 2 判定明确（§6）。
+**验收**：Table 1 完整，Gate 1 / Gate 1.5 / Gate 2 判定明确（§6）。
 
 ### S3.3 实验 1.3 / 1.4：消融
 
@@ -534,7 +541,8 @@ pre_term = (pre_patch - 0.5) if pre_mode == 'centered' else \
    - **主文坚持单一 k**：多尺度并联（Inception 式 3/5/7）使前端算力 ×3、叙事变浑，且低分辨率 VPR 图上多尺度收益有限；若审稿人要求，作为附录消融（3/5/7 并联、通道三等分保持总 C 不变），届时基础设施齐全，成本约一天算力。
 3. **Table 3（PatchNorm 2×4，本文最独特分析）**：PatchNorm {on,off} × {B0,B1,B2,B3}，双轨。假设：on 时 Conv-STDP 增益收窄（局部高通已提取边缘，conv 没新东西可学）、off 时增益放大。**两个方向都有结论可写**：收窄 → "VPRTempo 预处理已隐式完成卷积前端的工作"；放大 → "conv 前端与朴素编码互补"。按实际方向组织叙事。
 4. **conv epoch ∈ {1,2,4}**（附录）：验证 STDP 收敛与过拟合（无监督也会过拟合：核塌缩 / winner 垄断）。
-5. **编码探索（附录，可选）**：主实验一律用原始单步幅度编码（`SetImageAsSpikes`，像素/255），理由：①B0–B3 可比性，唯一变量是 conv 前端；②换多步编码（发放率/时延）会摧毁"无多步仿真"卖点——那是 SpikingJelly 参照行（S3.5）的领地。可选探索：**ON/OFF 双通道编码**（签名信号拆正/负两通道，类 DoG 中心-外周），与 conv-STDP 预期的中心-外周核结构天然契合；做则只跑 B2 主配置轨 B，作为附录一小节。注意它会改变输入通道数（1→2），不进主表。
+5. **E/I 通道拆分消融**（Table 2 附属行，一个开关）：{E/I 拆分（默认） vs 全兴奋核}，固定 B2 主组合，双轨。背景：blitnet 中抑制的三个经典角色在卷积前端里有两个已被替代——竞争由显式 WTA 接管（Diehl&Cook/Kheradpisheh 用侧抑制实现 WTA）、稳态由 WTA 稀疏 + 保范数归一化 + ITP 承担（homeostasis 默认关）；剩下唯一角色是"反对比度模式检测"的特征多样性，且 centered pre-term 下兴奋核更新已带符号，抑制核边际贡献未经验证。两种结果都可写：全兴奋 ≈ E/I → 显式 WTA 接管了抑制的经典角色（有意思的发现）；E/I 明显更好 → BLiTNet 的 E/I 思想在卷积域同样承重。
+6. **编码探索（附录，可选）**：主实验一律用原始单步幅度编码（`SetImageAsSpikes`，像素/255），理由：①B0–B3 可比性，唯一变量是 conv 前端；②换多步编码（发放率/时延）会摧毁"无多步仿真"卖点——那是 SpikingJelly 参照行（S3.5）的领地。可选探索：**ON/OFF 双通道编码**（签名信号拆正/负两通道，类 DoG 中心-外周），与 conv-STDP 预期的中心-外周核结构天然契合；做则只跑 B2 主配置轨 B，作为附录一小节。注意它会改变输入通道数（1→2），不进主表。
 
 **验收**：三张表齐全，每张至少一段可直接写进论文的观察。
 
