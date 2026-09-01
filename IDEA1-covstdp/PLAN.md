@@ -112,9 +112,11 @@ B1 vs B2 是 Gate 1 的关键对比：**两者用同一随机初始化、同一�
 |---|---|---|---|
 | R0 | B0 | —（原 VPRTempo） | 基线锚点 |
 | R1 | B1 | + 卷积结构（随机核） | 纯空间归纳偏置值多少？ |
-| R2 | B1 + 训 STDP（无 WTA） | + 无监督可塑性 | 学习本身值多少？ |
-| R3 | R2 + local WTA | + 竞争稀疏 | 竞争机制值多少？（= B2 主组合） |
-| R4 | R3 + ITP | + 阈值可塑性 | 通道分化值多少？ |
+| R2 | B1 + 训 STDP（无 WTA） | + 无监督可塑性 | 学习本身值多少？（与 Table 2 的 WTA=none 格**同一配置，跑一次两处引用**；更新策略见 S2.2 none 条） |
+| R3 | R2 + local WTA | + 竞争稀疏 | 竞争机制值多少？ |
+| R4 | R3 + ITP | + 阈值可塑性 | 通道分化值多少？（**= B2 主组合**：STDP + local WTA + ITP 全开） |
+
+**配置钉死**：主表里的 B2 ≡ R4 全配置（C=32, k=5, conv_epoch=2, WTA=local(4×4), agg=mean, pre_mode=centered, **ITP=on, E/I=on, homeostasis=off**）；R2/R3 是阶梯专用独立配置名，不与 B2 混用，避免阶梯表与主表对不上。
 
 每升一阶，双轨各报一次 Recall@K，**边际增益必须为正或至少有解释**（为负也要诚实报，那是分析素材）。这张表同时就是消融逻辑——区别只在于叙事顺序：消融是"从全配置往下拆"，阶梯是"从基线往上搭"。论文用阶梯叙事，附录用消融矩阵。
 
@@ -157,7 +159,7 @@ RGB图 → ProcessImage(同上) → 展平 [1, 784]
 
 | 方案 | conv 输出 flatten | feature_layer 权重（dense fp32） | 可行性 |
 |---|---|---|---|
-| 不下采样，直接 flatten | 32×24×24 = 18,432 | 18,432 × 36,864 ≈ 6.8×10⁸ 参数 ≈ **2.7 GB** | ❌ 不可行（且 calc_stdp 每样本还要 tile 同尺寸矩阵） |
+| 不下采样，直接 flatten | 32×24×24 = 18,432 | 18,432 × 36,864 ≈ 6.8×10⁸ 参数 ≈ **2.7 GB** | ❌ 不采用：存储在 24 GB 卡上勉强能跑，真正的否决理由是**参数量 ~30× 于 B0（1.2M），可比性破产** + `calc_stdp` 每样本 tile 同尺寸矩阵极慢 |
 | 4×4 空间下采样后 flatten | 32×6×6 = **1,152** | 1,152 × 2,304 ≈ 2.65×10⁶ ≈ 10.6 MB | ✅ 与 B0（784×1568=1.2M）同量级 |
 
 （56×56 对照组同理会放大 4 倍：不下采样 60 GB 完全不可行，下采样后 234 MB 勉强可行——进一步支持主实验用 28×28。）
@@ -298,9 +300,10 @@ layer.w.weight.data += layer.eta_stdp * dK
 
 **详细操作**：
 1. 加 `--seed` 参数；入口处 `torch.manual_seed / np.random.seed / random.seed` 三件套 + `generator=torch.Generator().manual_seed(seed)` 传给 DataLoader。
-2. 三个实验 seed 固定为 {0, 1, 2}，写死进实验配置。
-3. 注意 blitnet.py:308 用的是 `np.random`（不是 torch），必须一起固定。
-4. CUDA 下接受非完全确定性（cudnn benchmark），在论文里注明；seed 固定到"初始化与数据顺序可复现"级别即可。
+2. **补两个易漏的随机源**：`DataLoader(num_workers>0)` 时配 `worker_init_fn`（按 seed+worker_id 派生每个 worker 的种子，否则 worker 内 numpy/torch 随机序列不可控）；环境变量 `PYTHONHASHSEED` 写进 run_exp.py 的启动封装。
+3. 三个实验 seed 固定为 {0, 1, 2}，写死进实验配置。
+4. 注意 blitnet.py:308 用的是 `np.random`（不是 torch），必须一起固定。
+5. CUDA 下接受非完全确定性（cudnn benchmark），在论文里注明；seed 固定到"初始化与数据顺序可复现"级别即可。
 
 **验收**：同一配置同一 seed 连跑两次（CPU），模型参数一致或 Recall 完全一致。
 
@@ -315,10 +318,10 @@ layer.w.weight.data += layer.eta_stdp * dK
 
 **详细操作**：
 1. 新文件 `IDEA1-covstdp/experiments/eval_retrieval.py`，结构镜像 `run_inference`（VPRTempo.py:669）：建数据集 → 加载模型 → 遍历前向。差别在最后一步。
-2. **特征提取点**（每个变体一个指定层，写进配置）：
+2. **特征提取点**（每个变体一个指定层，写进配置；**统一取池化后 flatten 的 1,152 维向量**——即 feature_layer 实际看到的那个向量，不是池化前的 18,432 维大图）：
    - B0：feature_layer 输出（clamp 后）。
-   - B1/B2/B3/B5：conv 前端最后一层输出（clamp 后）→ flatten。**同时**记录 feature_layer 输出作为第二个特征点（附录分析用）。
-   - B4：CNN backbone 输出。
+   - B1/B2/B3/B5：conv 前端最后一层**池化后**输出 → flatten。**同时**记录 feature_layer 输出作为第二个特征点（附录分析用）。
+   - B4：CNN backbone 输出（同样取送分类头前的 flatten 向量）。
 3. 特征 L2 归一化 → 计算 Q×D cosine 相似度矩阵 S。
 4. GT 构造**必须与轨 A 逐比特一致**：复用 `run_inference` 中的 GT 逻辑（单位矩阵 + `GT_tolerance` 对角膨胀 + `skip` 偏移）——最稳妥的做法是把那段 GT 构造抽成一个共用函数两边调用，而不是抄一遍（抄会漂移）。
 5. 调 `recallAtK(S, GT, K)`（metrics.py:134），K ∈ {1,5,10,15,20,25}；同时输出 `recallAt100precision` 与 PR 曲线数据，PrettyTable 输出 + JSON 落盘。
@@ -336,7 +339,7 @@ layer.w.weight.data += layer.eta_stdp * dK
 3. 结果填入 `results/table_baseline_b0.md`，同时记录训练/推理耗时（给实验 1.5 垫底）。
 4. PatchNorm on/off 各一组（共 2×3=6 格），提前给实验 1.4 的第一列。
 
-**验收**：轨 A Recall@1 达到仓库 README/论文报告的同量级。若明显偏低，先排查环境/数据问题——**不要带着坏基线进入阶段 2**。
+**验收**：轨 A Recall@1 与**本仓库在相同 500 地配置下的先验跑结果**一致（±2 点内）。注意论文报告数字是 3300 地 3 模块的，与 500 地单模块**不可比**，不能作判据。若明显偏低，先排查环境/数据问题——**不要带着坏基线进入阶段 2**。
 
 ---
 
@@ -373,8 +376,8 @@ layer.w.weight.data += layer.eta_stdp * dK
 **详细操作**：
 1. 参数 `wta_mode ∈ {'global','local','none'}`，`wta_block=4`。
 2. **global**：每通道 argmax，仅该位置保留原值，其余置零（flat argmax → scatter 成 mask → `z * mask`）。
-3. **local**：不重叠 4×4 块，每块一个 winner。实现用 reshape/unfold 分块 → 块内 argmax → 置零其余 → 拼回。H',W' 不被 4 整除时**裁掉右/下余数边缘**（简单、无 padding 伪影，论文注明）。56 输入 k=5 → H'=52，52/4=13 整除，主组合无此问题。
-4. **none**：不置零（对照组）。
+3. **local**：不重叠 4×4 块，每块一个 winner。实现用 reshape/unfold 分块 → 块内 argmax → 置零其余 → 拼回。H',W' 不被 4 整除时**裁掉右/下余数边缘**（简单、无 padding 伪影，论文注明）。主配置 28 输入 k=5 → H'=24，24/4=6 整除，无此问题（56 对照 k=5 → 52/4=13 同样整除；仅 k=3 等组合需要裁边）。
+4. **none**：不置零（对照组）。此模式下 STDP 更新用**稠密 M = (0.5−post) 全图**（`conv2d_weight` 公式不变，M 不置零即可，ADR-3）——这也是阶梯 R2 与 Table 2 none 格的实现方式，**同一配置跑一次两处引用**。
 5. winner 的 (通道, y, x) 坐标列表要返回/缓存，供 S2.3 patch 提取。
 6. mask 作用于 clamp 后的活动，保证下游 feature_layer 看到的也是稀疏表征（否则 WTA 只影响学习不影响表征，实验逻辑不干净）。
 
@@ -397,7 +400,7 @@ pre_term = (pre_patch - 0.5) if pre_mode == 'centered' else \
            pre_patch if pre_mode == 'amp' else (pre_patch > 0.5).float()
 ```
 - `centered`：不动点变为"获胜 patch 相对背景的平均偏离模式"——那才是边缘/纹理结构。低于背景的位置获得负更新（被 clamp 压向 0），高于背景的位置持续增强 → 稀疏化 + 方向性自然涌现。
-- `amp` / `heaviside`：消融对照，用于在 Table 3 里量化"直流塌缩"假设的解释力（amp + PatchNorm on 应明显差于 centered + on；off 时差距收窄——off 时暗像素→0 本身就近似中心化）。
+- `amp` / `heaviside`：消融对照，用于在 **Table 3b**（S3.3 新增：B2 限定 patch_norm{on,off} × pre_mode{centered,amp} 2×2）里量化"直流塌缩"假设的解释力（amp + PatchNorm on 应明显差于 centered + on；off 时差距收窄——off 时暗像素→0 本身就近似中心化）。
 - 语义说明：blitnet 的 spike forcing 分支本就用幅度而非 Θ(pre)（blitnet.py:484/494），中心化偏离在论文中注明理由（PatchNorm 值域偏移所致）。
 
 **详细操作**：
@@ -421,7 +424,7 @@ pre_term = (pre_patch - 0.5) if pre_mode == 'centered' else \
 1. 对应核在边缘位置权重显著增大（数值断言）；
 2. 更新只发生在 winner 通道；
 3. 1000 步内核范数曲线稳定不发散；
-4. **直流防线**：每核直流比 `|mean(K)| / L1(K)` 随训练**下降**（centered 模式必须满足；amp 模式预期不满足——两相对照本身就是设计决策的实证）；
+4. **直流防线**：每核 **DC/AC 比** `|mean(K)| / (std(K) + ε)` 随训练**下降**（centered 模式必须满足；amp 模式预期不满足——两相对照本身就是设计决策的实证）。**不要用 `|mean|/L1`**：兴奋核 clamp(min=0) 后所有元素 ≥0，此时 Σw=Σ|w|，`|mean|/L1 ≡ 1/k²` 是与核形状无关的常数——平坦亮斑和稀疏边缘核算出同一个数，断言永远"通过"，防线形同虚设。DC/AC 比则区分度明确：平坦核 std→0 比值爆表，结构核 std 大比值小；
 5. **去相关防线**：核间两两余弦相似度均值随训练**不上升**（防止所有核塌向同一模板）。
 断言 4/5 在写任何大规模训练代码之前就能判定规则对不对——玩具测试不过，不进 S2.5。
 
@@ -431,15 +434,16 @@ pre_term = (pre_patch - 0.5) if pre_mode == 'centered' else \
 
 **详细操作**：
 1. `fire_rate` 形状 [1,C,1,1]，[0.2, 0.9] 线性分配（对齐 blitnet.py:164-167 的 fstep 逻辑）。
-2. 每个训练样本：
+2. 每个训练样本（**observed 必须在 WTA 之前的 clamp 图上统计**）：
    ```python
-   observed = (post_map > 0).float().mean(dim=(2,3), keepdim=True)  # 每通道实际发放率
+   observed = (pre_wta_map > 0).float().mean(dim=(2,3), keepdim=True)  # 每通道实际发放率（WTA 前！）
    layer.thr.data += layer.eta_ip * (observed - layer.fire_rate)
    layer.thr.data.clamp_(min=0)   # 对齐 blitnet.py:606
    ```
-3. 死通道监控：日志记录每通道 winner 计数直方图；某通道整 epoch 0 winner 时报警（ITP 失效信号，调 η_ITP 或 f 范围）。
+   **为什么不能在 WTA 后统计**：local WTA 下每通道恒有 (H'/4)×(W'/4) = 36 个 winner，post-WTA 图上每通道发放率被结构钉死为常数 36/576 ≈ 6.25%——`observed − f` 对所有通道同号同值，ITP 的差异化调节完全失效。global WTA 同理（恒 1 个 winner）。
+3. 死通道监控（信号必须换）：local WTA 下 winner 计数被结构钉死，"0-winner 报警"永远不会触发。改用两个有效信号——**每通道 winner 平均幅度 ≈ 0**（块内全零时 argmax 选出的也是 0）+ **pre-WTA 发放率长期贴 0**。任一触发即报警（ITP 失效信号，调 η_ITP 或 f 范围）。
 
-**验收**：训练后各通道经验发放率与目标 f 的秩相关显著为正；无整 epoch 0-winner 死通道。
+**验收**：训练后各通道 **pre-WTA** 经验发放率与目标 f 的秩相关显著为正；无 winner 均幅 ≈ 0 的死通道。
 
 ### S2.5 接入逐层训练框架
 
@@ -473,7 +477,15 @@ pre_term = (pre_patch - 0.5) if pre_mode == 'centered' else \
 
 **背景与动机**：回答"增益是不是只是加了深度"。两层逐层无监督（conv1 训完冻结 → conv2）是 BLiTNet 逐层哲学的自然延伸，layer_dict 机制再次免费复用。
 
-**详细操作**：`--frontend conv_stdp2`：conv1: 1→C1；conv2: C1→C2。维度链照 ADR-1 逐层算清并写进配置（建议：conv1 后不池化保持分辨率，conv2 后统一 4×4 池化 → flatten = C2×13×13，与 B2 同维度进 feature_layer，保证 B2/B3 下游可比）；如需 conv 间下采样，用 stride=2 并在配置里显式声明。**禁止先写代码后算维度**——feature_layer 参数量随 flatten 维度平方增长（ADR-1 的账）。类型分发天然支持多层（按 layer_dict 顺序各训各的）。
+**详细操作**：`--frontend conv_stdp2`：conv1: 1→C1；conv2: C1→C2。维度链照 ADR-1 逐层算清并写进配置，**拍板方案（28×28 主配置）**：
+
+```
+conv1（k=5, padding=2）：28 → 28（保持分辨率；STDP 的 conv2d_weight 调用须传相同 padding 保持对齐）
+conv2（k=5, 无 padding）：28 → 24
+4×4 池化（local WTA 块 winner 图）：24/4 = 6 → flatten = C2×6×6 = 32×36 = 1,152 ✓ 与 B2 严格同维
+```
+
+注意：两层都不 padding 的话是 28→24→20，池化后 5×5=25×C2=800 ≠ 1152，B2/B3 下游维度就不可比了——**conv1 的 padding=2 是同维的关键**，不是可选项。**禁止先写代码后算维度**——feature_layer 参数量随 flatten 维度平方增长（ADR-1 的账）。类型分发天然支持多层（按 layer_dict 顺序各训各的）。
 
 **验收**：双层训练完成、维度链正确；轨 B 数字可进主表。
 
@@ -495,7 +507,9 @@ pre_term = (pre_patch - 0.5) if pre_mode == 'centered' else \
 **详细操作**：
 1. `IDEA1-covstdp/src/gabor_frontend.py`：生成 Gabor 组（4 方向 {0,45,90,135°} × 2 频率 × 2 相位 × 2 尺度，凑齐 C=32；k 与 B2 主组合一致），参数覆盖应大致均匀采样方向-频率空间，不要手工调到"看起来好"（那是过拟合先验）。
 2. 复用 ConvSNNLayer 结构，权重直接载入 Gabor 组并 `frozen=True`（同 S2.6 机制），其余通路（WTA、池化、feature/output 层训练）与 B2 完全相同——**唯一变量是核的来源**。
-3. 双轨评测，进 Table 1。
+3. **负瓣保护（易踩的坑）**：Gabor 核自带负瓣（这正是它的表达力来源），而 ConvSNNLayer 的兴奋通道 clamp(min=0)。**载入 Gabor 权重时必须跳过符号钳制与保范数归一化**——frozen 标志要同时旁路这两条路径，仅确认初始化不经过 addWeights 的钳制是不够的，训练中每个 update 后的 clamp/renorm 也必须对 B5 关闭。
+4. **不对称性声明（叙事素材，不是缺陷）**：B5 用带符号核、B2 兴奋核非负——论文中显式说明，并正好给 ON/OFF 双通道编码（S3.3 附录探索）提供动机："无 BP 规则下负瓣由 OFF 通道表达"。
+5. 双轨评测，进 Table 1。
 
 **验收**：B5 双轨数字落在合理区间（预期 ≥ B1，因为它是知情设计）；若 B5 < B1 需排查 Gabor 参数覆盖。
 
@@ -520,7 +534,7 @@ pre_term = (pre_patch - 0.5) if pre_mode == 'centered' else \
 ### S3.2 实验 1.1：主表（Table 1）
 
 **详细操作**：
-1. 矩阵：B0–B5 × 3 seeds × 双轨 × PatchNorm=on（off 归实验 1.4）。主组合 C=32, k=5, conv_epoch=2, WTA=local(4×4), agg=mean, pre_mode=centered。B5（Gabor 滤波器组）无需训练，3 seeds 只影响下游 feature/output 层初始化。
+1. 矩阵：B0–B5 × 3 seeds × 双轨 × PatchNorm=on（off 归实验 1.4）。**B2 主组合钉死（= 阶梯 R4）**：C=32, k=5, conv_epoch=2, WTA=local(4×4), agg=mean, pre_mode=centered, **ITP=on, E/I=on, homeostasis=off**。B5（Gabor 滤波器组）无需训练，3 seeds 只影响下游 feature/output 层初始化。
 2. 指标：Recall@1/5/10/25 为主 + recall@100%precision 互补（指标决策见 S1.4），PR 曲线图进正文。
 3. 执行：run_exp.py 批量 → `experiments/make_table1.py` 汇总 mean±std。
 4. 统计判据（提前承诺）：B2−B1（轨B）、B2−B0（轨A）报差值 ± 联合 std；3 seed 太少不做强显著性声明，以效应量为主，措辞谨慎。
@@ -540,6 +554,7 @@ pre_term = (pre_patch - 0.5) if pre_mode == 'centered' else \
    - 理论锚点（写进方法论）：k 应与 PatchNorm 窗口同量级或更小——28×28 下 patches=7，k=5 ≈ 0.7×7 合理；k=1 退化为逐点变换（无空间结构），k=H 退化为全局模板匹配（≈全连接），最优值必在中间，{3,5,7} 覆盖低/中/高段。
    - **主文坚持单一 k**：多尺度并联（Inception 式 3/5/7）使前端算力 ×3、叙事变浑，且低分辨率 VPR 图上多尺度收益有限；若审稿人要求，作为附录消融（3/5/7 并联、通道三等分保持总 C 不变），届时基础设施齐全，成本约一天算力。
 3. **Table 3（PatchNorm 2×4，本文最独特分析）**：PatchNorm {on,off} × {B0,B1,B2,B3}，双轨。假设：on 时 Conv-STDP 增益收窄（局部高通已提取边缘，conv 没新东西可学）、off 时增益放大。**两个方向都有结论可写**：收窄 → "VPRTempo 预处理已隐式完成卷积前端的工作"；放大 → "conv 前端与朴素编码互补"。按实际方向组织叙事。
+4. **Table 3b（直流塌缩的直接证据格）**：B2 限定，patch_norm {on,off} × pre_mode {centered,amp} 2×2，双轨。预期 amp+on 明显差于 centered+on（直流塌缩实证）、off 时差距收窄（off 时暗像素→0 本身近似中心化）。这是 S2.3 设计决策的量化验证，也是审稿人问"为什么 centered"时的数据答案。
 4. **conv epoch ∈ {1,2,4}**（附录）：验证 STDP 收敛与过拟合（无监督也会过拟合：核塌缩 / winner 垄断）。
 5. **E/I 通道拆分消融**（Table 2 附属行，一个开关）：{E/I 拆分（默认） vs 全兴奋核}，固定 B2 主组合，双轨。背景：blitnet 中抑制的三个经典角色在卷积前端里有两个已被替代——竞争由显式 WTA 接管（Diehl&Cook/Kheradpisheh 用侧抑制实现 WTA）、稳态由 WTA 稀疏 + 保范数归一化 + ITP 承担（homeostasis 默认关）；剩下唯一角色是"反对比度模式检测"的特征多样性，且 centered pre-term 下兴奋核更新已带符号，抑制核边际贡献未经验证。两种结果都可写：全兴奋 ≈ E/I → 显式 WTA 接管了抑制的经典角色（有意思的发现）；E/I 明显更好 → BLiTNet 的 E/I 思想在卷积域同样承重。
 6. **编码探索（附录，可选）**：主实验一律用原始单步幅度编码（`SetImageAsSpikes`，像素/255），理由：①B0–B3 可比性，唯一变量是 conv 前端；②换多步编码（发放率/时延）会摧毁"无多步仿真"卖点——那是 SpikingJelly 参照行（S3.5）的领地。可选探索：**ON/OFF 双通道编码**（签名信号拆正/负两通道，类 DoG 中心-外周），与 conv-STDP 预期的中心-外周核结构天然契合；做则只跑 B2 主配置轨 B，作为附录一小节。注意它会改变输入通道数（1→2），不进主表。
@@ -571,7 +586,7 @@ pre_term = (pre_patch - 0.5) if pre_mode == 'centered' else \
 
 | 门 | 判据 | 通过含义 | 不通过的动作 |
 |---|---|---|---|
-| Gate 0（阶段1出口） | B0 双轨基线复现到论文量级 | 基础设施可信 | 不进阶段 2，先排查 |
+| Gate 0（阶段1出口） | B0 双轨基线与本仓库同 500 地配置先验结果一致（±2 点；论文 3300 地数字不可比作判据） | 基础设施可信 | 不进阶段 2，先排查 |
 | Gate 1 | 轨B：B2 > B1，差值 > 3-seed 联合 std | 可塑性学到结构（核可视化佐证） | 回查 S2.3/S2.4（先查直流防线断言 4/5）；仍不过则整个 idea 重估 |
 | Gate 1.5 | 轨B：B2 ≥ B5（Gabor 手工组）− 1×std | 学习达到/超越手工滤波器 | B2 明显 < B5 → 规则没学到结构，回查 pre_mode 与 WTA；若 B5 反而最强，故事改为"手工前端 + SNN 读出"并弱化学习叙事 |
 | Gate 2 | 轨A：B2 或 B3 > B0 | 空间归纳偏置帮助完整系统 | **退路启动**：改分析型故事 |
@@ -604,6 +619,18 @@ pre_term = (pre_patch - 0.5) if pre_mode == 'centered' else \
 3. 每个卡片完成后：更新本文件清单勾选 + `results/` 落盘 + 提交到功能分支，**不直接合 main**（main 只收阶段级合并）。
 4. 分支命名：`feat/convstdp-s<编号>-<短名>`，如 `feat/convstdp-s21-conv-forward`。
 5. 所有实验必须能由 `experiments/run_exp.py` + 配置复现，禁止"手工跑了一次"的孤儿结果进表。
+
+### Fork 前一次性锁定的决策清单（改动需回到本文档修订并记录原因）
+
+| # | 事项 | 锁定值 |
+|---|---|---|
+| 1 | B2 主组合完整配置 | C=32, k=5, conv_epoch=2, WTA=local(4×4), agg=mean, pre_mode=centered, **ITP=on, E/I=on, homeostasis=off**（= 阶梯 R4，S3.2 已同步） |
+| 2 | 轨 B 特征点 | 池化后 flatten 的 1,152 维（feature_layer 实际看到的向量），全变体统一 |
+| 3 | Gate 0 判据 | 本仓库同 500 地配置先验结果 ±2 点（论文 3300 地数字不可比） |
+| 4 | 调参协议 | 轨 B 单 seed 粗调 → 锁定写入配置文件 → 3 seed 正式跑（防止隐式调参泄漏进主表） |
+| 5 | seed 细节 | 三件套 + `worker_init_fn`（num_workers>0 时）+ `PYTHONHASHSEED`（S1.3） |
+| 6 | 诊断标准化 | 每个训练 run 固定落盘 JSON：pre-WTA 发放率、winner 平均幅度、核范数曲线、thr 曲线、DC/AC 比、核间余弦——并入 S2.3/S2.4 验收 |
+| 7 | 时间线瘦身预案 | 窗口期紧张时的砍单顺序：S3.3-6 编码探索 → B3 → ORC（B5 便宜且叙事价值高，最后砍） |
 
 ### 总检查清单
 - [ ] S1.1 配置系统与 run_exp.py
