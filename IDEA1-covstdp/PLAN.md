@@ -14,6 +14,7 @@
       - [ADR-3 conv-STDP 更新数学：blitnet 五步骤逐项裁决 + 向量化实现](#adr-3-conv-stdp-更新数学blitnet-五步骤逐项裁决--向量化实现)
   - [2. 阶段划分与依赖图](#2-阶段划分与依赖图)
   - [3. 阶段 1：基础设施与数据通路](#3-阶段-1基础设施与数据通路)
+    - [前置步骤（第 -1 步：main 分支参照跑）](#前置步骤第--1-步main-分支参照跑)
     - [S1.1 分支策略与实验配置系统](#s11-分支策略与实验配置系统)
     - [S1.2 PatchNorm 开关化](#s12-patchnorm-开关化)
     - [S1.3 seed 管理与可复现性](#s13-seed-管理与可复现性)
@@ -269,15 +270,22 @@ layer.w.weight.data += layer.eta_stdp * dK
 
 ## 3. 阶段 1：基础设施与数据通路
 
+### 前置步骤（第 -1 步：main 分支参照跑）
+
+**为什么需要它**：main 分支没有 `--seed`，自身两次运行结果都不同，"B0 逐比特回归"需要两边都有种子。因此参照跑分两层：
+
+- **-1a 冒烟跑**（不改任何代码，在 main 上）：100 地 spring,fall→summer、28×28/patches=7、skip=0、1 次。产出：环境/数据通路验证 + 单 run 墙钟（决定后续跑本地 CPU 还是工作站 GPU）+ Recall 量级 sanity（对照论文数字定性）。
+- **-1b 种子化参照跑**（S1.3 完成后，回到 main 分支）：用 S1.3 的 `seeded_ref_run.py` 驱动脚本（先固定种子再调 main 入口，不依赖任何新参数）跑 500 地正式参照——**这才是 Gate 0 与 B0 回归的真参照**；随后在 feat 分支同配置复跑，两边必须逐比特一致。
+
 ### S1.1 分支策略与实验配置系统
 
 **背景与动机**：实验矩阵是 ~10 配置 × 3 seed × 2 轨 × 2 数据集，手工敲 CLI 参数必然出错且不可复现。论文级实验需要"配置即代码"。
 
 **详细操作**：
 1. 建分支 `feat/convstdp-base`（从 main 切出）。所有阶段 1 改动在此分支，完成后合回 main。
-2. 在 `IDEA1-covstdp/experiments/` 建配置目录，每个实验一个 YAML/JSON（或 Python dict 文件），字段对应 main.py 的全部 CLI 参数 + 新增参数（`seed`, `patch_norm`, `frontend`, `wta_mode`, `wta_block`, `agg_mode`, `conv_channels`, `conv_kernel`, `conv_epoch`）。
-3. 写一个薄封装 `IDEA1-covstdp/experiments/run_exp.py`：读配置 → 调 main.py 的入口函数 → 把 stdout/结果表存入 `IDEA1-covstdp/results/<exp_id>/seed_<n>/`。
-4. 结果文件统一命名 `<exp_id>__seed<n>__trackA.json` / `__trackB.json`，内含 Recall@1/5/10/15/20/25 + 配置全文（自描述，防止日后对不上号）。
+2. 在 `IDEA1-covstdp/phase1/configs/` 建配置目录，每个实验一个 JSON，字段对应 main.py 的全部 CLI 参数（**含 `skip`、`filter`、`data_dir`**——它们是数据通路的一部分，B0–B5、双轨、将来 3300 地扩展都靠它们对齐）+ 新增参数占位（`seed`, `patch_norm`, `frontend`, `wta_mode`, `wta_block`, `agg_mode`, `conv_channels`, `conv_kernel`, `conv_epoch`）。机器相关值（`data_dir` 等）放 `phase1/configs/local_override.json`（gitignore），不进版本化配置模板。
+3. 写薄封装 `IDEA1-covstdp/experiments/run_exp.py`：读配置 → 构造 `argparse.Namespace` → **函数调用 `from main import initialize_and_run_model`（main.py:199，入口逻辑已是函数，无需大重构）** → stdout/结果表存入 `IDEA1-covstdp/results/<exp_id>/seed_<n>/`。**禁止 subprocess 拼命令行**。三个坑必须处理：①`check_pretrained_model`（VPRTempoTrain.py:549）在模型已存在时 `input()` 交互询问——批量跑会卡死，用唯一模型名（exp_id + seed）规避；②相对路径（`'./vprtempo/models'`）要求 cwd 为仓库根，run_exp.py 显式断言；③全局 logging 在多次函数调用下的重复 handler 问题。
+4. 结果文件统一命名 `<exp_id>__seed<n>__trackA.json` / `__trackB.json`，内含 Recall@1/5/10/15/20/25 + recall@100%precision + 配置全文 + device + 墙钟（自描述，防止日后对不上号）。
 
 **验收**：用一个配置跑通 B0 的 `pixi run eval` 等效流程，结果落盘且可重复（同一 seed 两次运行结果一致）。
 
@@ -293,7 +301,7 @@ layer.w.weight.data += layer.eta_stdp * dK
 3. 调用链上传参：main.py → VPRTempoTrain/VPRTempo 构造 → `train_new_model`/`run_inference` 里的 `ProcessImage(model.dims, model.patches, ...)`（VPRTempoTrain.py:623-625 和 VPRTempo.py 对应位置）。
 4. 模型文件名中加入 patch_norm 标记，避免 on/off 模型互相覆盖（参考现有命名约定 `<dirs>_VPRTempo_IN..._FN..._DB....pth`）。
 
-**验收**：同配置 on/off 各跑一次 eval，Recall@K 出现可记录差异；off 时 B0 不退化到不可用（若退化严重，本身即是实验 1.4 的一个发现）。
+**验收**：①同配置 on/off 各跑一次 eval，Recall@K 出现可记录差异；off 时 B0 不退化到不可用（若退化严重，本身即是实验 1.4 的一个发现）。②**on/off 各存一张输入像素值直方图到 `results/`**（on 背景应 ≈127.5、off 保留暗背景）——这是 Table 3b 直流塌缩分析的前置证据，事后无法补采。
 
 ### S1.3 seed 管理与可复现性
 
@@ -305,6 +313,7 @@ layer.w.weight.data += layer.eta_stdp * dK
 3. 三个实验 seed 固定为 {0, 1, 2}，写死进实验配置。
 4. 注意 blitnet.py:308 用的是 `np.random`（不是 torch），必须一起固定。
 5. CUDA 下接受非完全确定性（cudnn benchmark），在论文里注明；seed 固定到"初始化与数据顺序可复现"级别即可。
+6. **种子注入驱动脚本 `experiments/seeded_ref_run.py`**：在做任何事之前先固定三件套种子，再调 main 入口。**不依赖任何新参数**，因此可在 main 分支上跑（第 -1b 步参照）、也可在 feat 分支上跑（B0 回归对拍）——"逐比特一致"的回归测试只有两边都有种子才成立。
 
 **验收**：同一配置同一 seed 连跑两次（CPU），模型参数一致或 Recall 完全一致。
 
@@ -335,12 +344,12 @@ layer.w.weight.data += layer.eta_stdp * dK
 **背景与动机**：在任何新代码落地前，必须有可信的 B0 双轨基线数字。它是所有后续对比的分母，也是回归参照。
 
 **详细操作**：
-1. 数据：Nordland，参考 = spring + fall（`--database_dirs spring,fall`，现有代码的 `location_repeat=2` 机制，VPRTempoTrain.py:177-179），查询 = summer；`--database_places 500 --query_places 500`（500 地 = 单模块，不触发 max_module 拆分，先避开多模块复杂度）。**输入配置与论文对齐：`--dims 28,28 --patches 7`**（main.py:368 注释：论文 28×28 / 7×7，代码默认 56×56 是开发默认值，不用）。
+1. 数据：Nordland，参考 = spring + fall（`--database_dirs spring,fall`，现有代码的 `location_repeat=2` 机制，VPRTempoTrain.py:177-179），查询 = summer；`--database_places 500 --query_places 500`（500 地 = 单模块，不触发 max_module 拆分，先避开多模块复杂度；500 地是作者官方预训练模型的规模，README.md:45）。**输入配置与论文对齐：`--dims 28,28 --patches 7`**（main.py:368 注释：论文 28×28 / 7×7，代码默认 56×56 是开发默认值，不用）。
 2. 3 seeds × （轨A: 训练 + eval）× （轨B: S1.4 脚本）。
-3. 结果填入 `results/table_baseline_b0.md`，同时记录训练/推理耗时（给实验 1.5 垫底）。
+3. 结果填入 `results/table_baseline_b0.md`；**每格记录训练/推理墙钟**，基线跑完后**外推全实验矩阵总耗时**（B0–B5 × 消融 × 3 seeds × 双轨），形成本地/工作站分工建议写入 `results/time_budget.md`——CPU-only 环境下这不是可选项，是整个时间表的关键数据。
 4. PatchNorm on/off 各一组（共 2×3=6 格），提前给实验 1.4 的第一列。
 
-**验收**：轨 A Recall@1 与**本仓库在相同 500 地配置下的先验跑结果**一致（±2 点内）。注意论文报告数字是 3300 地 3 模块的，与 500 地单模块**不可比**，不能作判据。若明显偏低，先排查环境/数据问题——**不要带着坏基线进入阶段 2**。
+**验收**：轨 A Recall@1 与**第 -1b 步的种子化 main 参照**一致（±2 点内），且 feat 分支默认参数运行与参照**逐比特一致**（真·B0 回归）。论文报告数字是 3300 地 3 模块的，与 500 地单模块不可比，只作量级 sanity。若明显偏低，先排查环境/数据问题——**不要带着坏基线进入阶段 2**。
 
 ---
 
@@ -587,7 +596,7 @@ conv2（k=5, 无 padding）：28 → 24
 
 | 门 | 判据 | 通过含义 | 不通过的动作 |
 |---|---|---|---|
-| Gate 0（阶段1出口） | B0 双轨基线与本仓库同 500 地配置先验结果一致（±2 点；论文 3300 地数字不可比作判据） | 基础设施可信 | 不进阶段 2，先排查 |
+| Gate 0（阶段1出口） | B0 与第 -1b 步种子化 main 参照一致（±2 点）且 feat 默认参数逐比特回归通过 | 基础设施可信 | 不进阶段 2，先排查 |
 | Gate 1 | 轨B：B2 > B1，差值 > 3-seed 联合 std | 可塑性学到结构（核可视化佐证） | 回查 S2.3/S2.4（先查直流防线断言 4/5）；仍不过则整个 idea 重估 |
 | Gate 1.5 | 轨B：B2 ≥ B5（Gabor 手工组）− 1×std | 学习达到/超越手工滤波器 | B2 明显 < B5 → 规则没学到结构，回查 pre_mode 与 WTA；若 B5 反而最强，故事改为"手工前端 + SNN 读出"并弱化学习叙事 |
 | Gate 2 | 轨A：B2 或 B3 > B0 | 空间归纳偏置帮助完整系统 | **退路启动**：改分析型故事 |
@@ -627,7 +636,7 @@ conv2（k=5, 无 padding）：28 → 24
 |---|---|---|
 | 1 | B2 主组合完整配置 | C=32, k=5, conv_epoch=2, WTA=local(4×4), agg=mean, pre_mode=centered, **ITP=on, E/I=on, homeostasis=off**（= 阶梯 R4，S3.2 已同步） |
 | 2 | 轨 B 特征点 | 池化后 flatten 的 1,152 维（feature_layer 实际看到的向量），全变体统一 |
-| 3 | Gate 0 判据 | 本仓库同 500 地配置先验结果 ±2 点（论文 3300 地数字不可比） |
+| 3 | Gate 0 判据 | 第 -1b 步种子化 main 参照 ±2 点 + feat 默认参数逐比特回归（论文 3300 地数字只作量级 sanity） |
 | 4 | 调参协议 | 轨 B 单 seed 粗调 → 锁定写入配置文件 → 3 seed 正式跑（防止隐式调参泄漏进主表） |
 | 5 | seed 细节 | 三件套 + `worker_init_fn`（num_workers>0 时）+ `PYTHONHASHSEED`（S1.3） |
 | 6 | 诊断标准化 | 每个训练 run 固定落盘 JSON：pre-WTA 发放率、winner 平均幅度、核范数曲线、thr 曲线、DC/AC 比、核间余弦——并入 S2.3/S2.4 验收 |
