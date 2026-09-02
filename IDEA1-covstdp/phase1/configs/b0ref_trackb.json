@@ -1,0 +1,22 @@
+{
+  "_comment": "S1.4 验收用：用第 -1b 步的参照模型 b0ref__seed0.pth 跑轨 B。",
+  "exp_id": "b0ref_trackb",
+  "model_name": "b0ref__seed0.pth",
+  "dataset": "nordland",
+  "data_dir": null,
+  "database_places": 500,
+  "query_places": 500,
+  "max_module": 500,
+  "database_dirs": "spring,fall",
+  "query_dir": "summer",
+  "GT_tolerance": 0,
+  "skip": 0,
+  "filter": 8,
+  "epoch": 4,
+  "patches": 7,
+  "dims": "28,28",
+  "PR_curve": true,
+  "seed": 0,
+  "patch_norm": "on",
+  "frontend": "none"
+}

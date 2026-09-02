@@ -75,6 +75,7 @@ from prettytable import PrettyTable
 from torch.utils.data import DataLoader
 from vprtempo.src.download import get_data_model
 from vprtempo.src.metrics import recallAtK, createPR
+from vprtempo.src.gt import build_ground_truth
 from vprtempo.src.dataset import CustomImageDataset, ProcessImage
 
 
@@ -387,54 +388,14 @@ class VPRTempo(nn.Module):
         # ================================================================================
         # 【行级注释 —— 阶段 4：构建 Ground Truth 矩阵 GT】
         # ================================================================================
-        # GT 是二值矩阵（0 或 1），GT[i, j] = 1 表示：
-        #   第 j 个查询图像的真实匹配地点是第 i 个数据库图像。
-        # 
-        # 对于"on-the-rails"数据集（如 Nordland、Oxford RobotCar）：
-        #   相机沿固定路线行驶，查询图像与数据库图像按时间/空间顺序一一对应。
-        #   因此 GT 本质上是单位矩阵（对角线为 1）。
-        # 
-        # 特殊情况：skip != 0
-        #   表示查询图像从数据库第 skip 帧之后开始录制，存在固定偏移。
-        #   例如 skip=100 表示查询从第 100 帧开始，对应关系变为 GT[skip+j, j] = 1。
-        #   这里 skip 要先除以 filter（降采样步长），因为 CSV 中已按 filter 降采样。
+        # IDEA1 S1.4：GT 构造已抽取为共用函数 vprtempo/src/gt.py::build_ground_truth，
+        # 轨 A（本函数）与轨 B（eval_retrieval.py）共用同一实现，保证逐比特一致。
+        # 逻辑不变：skip!=0 → GT[skip//filter + j, j] = 1（skip 先整除 filter 换算成
+        # 降采样后偏移）；skip==0 → 单位矩阵；GT_tolerance>0 → 每列正例行 ±tolerance 膨胀。
         # ================================================================================
-        if self.skip != 0:
-            # 初始化全零矩阵，形状 [database_places, query_places]
-            GT = np.zeros((model.database_places, model.query_places))
-            # 计算降采样后的 skip 偏移量（因为数据库和查询都已按 filter 步长采样）
-            skip = model.skip // model.filter #整除 filter 得到实际的帧数偏移，例如 skip=100, filter=8 → skip=12（向下）
-            # query_indices = [0, 1, 2, ..., query_places-1]
-            query_indices = np.arange(model.query_places)
-            # 在对角线偏移 skip 的位置设为 1
-            GT[skip + query_indices, query_indices] = 1
-        else:
-            # 无偏移时，GT 就是单位矩阵（对角线为 1）
-            GT = np.eye(model.database_places, model.query_places)
-
-        # ================================================================================
-        # 【行级注释 —— 阶段 4b：应用 GT 容差（GT_tolerance）】
-        # ================================================================================
-        # VPR 是场景识别任务，相邻的几帧图像可能对应同一物理地点（如 100 米范围内）。
-        # 因此严格的"点对点"匹配（仅对角线为 1）过于苛刻。
-        # 
-        # GT_tolerance 允许在对角线附近的一定窗口内都视为正确匹配：
-        #   例如 GT_tolerance=5：真实匹配点前后 ±5 帧都视为正例（GT 设为 1）。
-        # 
-        # 实现方式：遍历 GT 的每一列（每个查询），找到值为 1 的行，
-        #          然后将该行的 [row-tolerance, row+tolerance] 范围内都置为 1。
-        # ================================================================================
-        if self.GT_tolerance > 0:  #GT_tolerance是一个整数，表示容差窗口的大小
-            num_rows, num_cols = GT.shape # GT 的行数 = 数据库地点数，列数 = 查询地点数
-            for col in range(num_cols):
-                # 找到当前列中所有为 1 的行索引（正常情况下只有 1 个）
-                ones_indices = np.where(GT[:, col] == 1)[0]
-                for row in ones_indices:
-                    # 计算容差窗口的上下边界（防止越界）
-                    start_row = max(row - self.GT_tolerance, 0)
-                    end_row = min(row + self.GT_tolerance + 1, num_rows)
-                    # 将窗口内的 GT 值设为 1
-                    GT[start_row:end_row, col] = 1
+        GT = build_ground_truth(model.database_places, model.query_places,
+                                skip=model.skip, filter=model.filter,
+                                tolerance=self.GT_tolerance)
         
         # ================================================================================
         # 【行级注释 —— 阶段 5a：生成 Precision-Recall 曲线（可选）】
