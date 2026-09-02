@@ -654,8 +654,8 @@ conv2（k=5, 无 padding）：28 → 24
 - [x] S2.2 WTA 三变体（winner_mask 结构性断言 + results/wta_mask_demo.png）
 - [x] S2.3 calc_stdp_conv（聚合 + 钳制 + 归一化）✅ 对拍 18/18 + 玩具测试 24/24（含 ON/OFF 设计修订：抑制核直接 clamp 先天性死亡 → 改为 OFF 检测器，见 S2.1 修订注记）
 - [x] S2.4 卷积 ITP（observed 在 WTA 前统计；修复后 ρ=1.000）
-- [ ] S2.5 接入 train_new_model + 推理侧 + 共享前端
-- [ ] S2.6 B1 Random Conv 对照
+- [x] S2.5 接入 train_new_model + 推理侧 + 共享前端（冒烟/回归/保存加载往返全过；plt.show() 挂死坑已修 MPLBACKEND=Agg）
+- [x] S2.6 B1 Random Conv 对照（frozen 机制验证，同 seed 同初始化；B2 vs B1 轨 B 预演信号为正，见 results/s25_b2_vs_b1_preview.md）
 - [ ] S2.7 B3 两层
 - [ ] S2.8 B4 CNN 参照
 - [ ] S2.9 B5 Gabor 滤波器组前端

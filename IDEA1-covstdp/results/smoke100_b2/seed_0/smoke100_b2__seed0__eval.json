@@ -1,8 +1,8 @@
 {
-  "exp_id": "smoke100",
+  "exp_id": "smoke100_b2",
   "seed": 0,
   "phase": "eval",
-  "wall_time_s": 0.57,
+  "wall_time_s": 1.4,
   "device": "CPU",
   "config": {
     "dataset": "nordland",
@@ -24,19 +24,26 @@
     "PR_curve": true,
     "sim_mat": false,
     "run_demo": false,
-    "exp_id": "smoke100",
+    "exp_id": "smoke100_b2",
     "seed": 0,
     "patch_norm": "on",
-    "frontend": "none"
+    "frontend": "conv_stdp",
+    "wta_mode": "local",
+    "wta_block": 4,
+    "agg_mode": "mean",
+    "pre_mode": "centered",
+    "conv_channels": 32,
+    "conv_kernel": 5,
+    "conv_epoch": 2
   },
   "recallAtK": {
-    "1": 0.99,
-    "5": 1.0,
-    "10": 1.0,
-    "15": 1.0,
-    "20": 1.0,
-    "25": 1.0
+    "1": 0.47,
+    "5": 0.76,
+    "10": 0.88,
+    "15": 0.93,
+    "20": 0.96,
+    "25": 0.97
   },
-  "recallAt100precision": 0.98989898989899,
-  "precisionAt100recall": 0.99
+  "recallAt100precision": 0.2765957446808511,
+  "precisionAt100recall": 0.5053763440860215
 }

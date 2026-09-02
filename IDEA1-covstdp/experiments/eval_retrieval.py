@@ -74,14 +74,24 @@ def build_inference_models(cfg):
 
 
 def extract_features(models, dataset, device):
-    """逐样本提取 encoder 特征：feature_layer 线性输出 → clamp_spikes（减 thr + clamp [0,0.9]）"""
+    """逐样本提取 encoder 特征：
+    - frontend='none'（B0）：feature_layer 线性输出 → clamp_spikes（减 thr + clamp [0,0.9]）
+    - conv 前端（B1/B2/B3/B5）：conv 池化后 flatten 的 1152 维（PLAN S1.4 钉死的特征点，
+      多模块共享同一前端权重，取 models[0] 即可）
+    """
     import vprtempo.src.blitnet as bn
+    from vprtempo.src import conv_frontend as cf
+
+    use_conv = getattr(models[0], 'frontend', 'none') != 'none' and hasattr(models[0], 'conv_layer')
 
     loader = DataLoader(dataset, batch_size=1, shuffle=False, num_workers=4)
     feats = []
     with torch.no_grad():
         for spikes, _ in loader:
             spikes = spikes.to(device)
+            if use_conv:
+                feats.append(cf.conv_forward(models[0].conv_layer, spikes).cpu())
+                continue
             # 阶段 1 为单模块；多模块时各模块特征拼接（与轨 A 输出拼接同构）
             per_module = []
             for model in models:

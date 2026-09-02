@@ -27,6 +27,10 @@ import sys
 import time
 from pathlib import Path
 
+# 【S2.5】评估阶段的 plt.show()（VPRTempo.py PR 曲线绘制）在交互式后端下会阻塞进程，
+# 统一强制 Agg 后端（无头环境），防止 eval 挂死。
+os.environ.setdefault("MPLBACKEND", "Agg")
+
 REPO_ROOT = Path(__file__).resolve().parents[2]
 CONFIGS_DIR = REPO_ROOT / "IDEA1-covstdp" / "phase1" / "configs"
 RESULTS_DIR = REPO_ROOT / "IDEA1-covstdp" / "results"

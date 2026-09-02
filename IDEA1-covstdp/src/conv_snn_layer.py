@@ -141,11 +141,12 @@ class ConvSNNLayer(nn.Module):
         self.eta_stdp = torch.tensor(stdp_rate, device=device)
 
         # 每通道目标发放率 [1,C,1,1]，[f_min,f_max] 线性分配（对齐 blitnet.py:164-167）
-        fr = torch.zeros([1, out_channels, 1, 1], device=device)
+        # 注意：用普通属性而非 buffer —— 与 SNNLayer 一致（fire_rate 由配置确定性派生，
+        # 不进 state_dict，避免训练态/推理态加载时键不匹配）
+        self.fire_rate = torch.zeros([1, out_channels, 1, 1], device=device)
         fstep = (fire_rate[1] - fire_rate[0]) / out_channels
         for i in range(out_channels):
-            fr[:, i] = fire_rate[0] + fstep * (i + 1)
-        self.register_buffer('fire_rate', fr)
+            self.fire_rate[:, i] = fire_rate[0] + fstep * (i + 1)
 
         # 卷积版权重初始化（addWeights 的卷积版，见下方函数）
         self.w.weight = self._add_conv_weights()
@@ -275,3 +276,22 @@ class ConvSNNLayer(nn.Module):
             pooled = torch.nn.functional.max_pool2d(
                 pre_wta[:, :, :Hc, :Wc], kernel_size=b)
         return pooled.reshape(1, -1)
+
+
+# ================================================================================
+# Part 4: ConvFrontendModule —— 推理链适配器（S2.5 框架接入）
+# ================================================================================
+# VPRTempo.evaluate 的推理链是 nn.Sequential(feature_layer.w, output_layer.w)，
+# 输入是平向量 [1, H*W]。本适配器把 conv 前端包装成 nn.Module：
+#   forward(x_flat) → reshape → ConvSNNLayer → pooled_flat
+# 使 nn.Sequential(ConvFrontendModule(conv), feature_layer.w, output_layer.w) 直接成立，
+# 推理侧改动最小（ADR-2 的拍板：显式分发，不伪装进 SNNLayer 接口）。
+# ================================================================================
+class ConvFrontendModule(nn.Module):
+    def __init__(self, conv_layer):
+        super().__init__()
+        self.conv_layer = conv_layer
+
+    def forward(self, x_flat):
+        out = self.conv_layer(self.conv_layer.reshape_input(x_flat))
+        return out.pooled_flat

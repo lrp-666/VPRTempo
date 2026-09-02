@@ -143,8 +143,12 @@ def generate_model_name(model, quant=False, custom_name=None):
                 "DB"+str(model.database_places) +
                 ".pth")
     else:
+        # 【IDEA1 S2.5】conv 前端标记，防止覆盖 B0 模型（S2.5 卡片）
+        frontend_tag = ""
+        if getattr(model, 'frontend', 'none') != 'none':
+            frontend_tag = f"CONVC{getattr(model, 'conv_channels', 32)}K{getattr(model, 'conv_kernel', 5)}_"
         model_name = (''.join(model.database_dirs)+"_"+
-                "VPRTempo_" +
+                "VPRTempo_" + frontend_tag +
                 "IN"+str(model.input)+"_" +
                 "FN"+str(model.feature)+"_" + 
                 "DB"+str(model.database_places) +
@@ -462,6 +466,24 @@ def parse_network():
     # 提供时固定 torch/numpy/random 三件套 + DataLoader shuffle 生成器。
     parser.add_argument('--seed', type=int, default=None,
                         help="Random seed for reproducibility (IDEA1); default None = unseeded (original behavior)")
+    # ---- IDEA1 S2.5：卷积前端相关参数（默认 frontend='none' = B0 原行为）----
+    parser.add_argument('--frontend', type=str, default='none',
+                        choices=['none', 'conv_stdp', 'random_conv'],
+                        help="Conv frontend type (IDEA1); default none = original VPRTempo")
+    parser.add_argument('--wta_mode', type=str, default='local', choices=['global', 'local', 'none'],
+                        help="WTA competition mode for conv frontend (IDEA1)")
+    parser.add_argument('--wta_block', type=int, default=4,
+                        help="Local WTA block size (IDEA1)")
+    parser.add_argument('--agg_mode', type=str, default='mean', choices=['mean', 'sum'],
+                        help="Winner aggregation mode for conv STDP (IDEA1)")
+    parser.add_argument('--pre_mode', type=str, default='centered', choices=['centered', 'amp', 'heaviside'],
+                        help="Pre-term mode for conv STDP (IDEA1)")
+    parser.add_argument('--conv_channels', type=int, default=32,
+                        help="Number of conv frontend channels (IDEA1)")
+    parser.add_argument('--conv_kernel', type=int, default=5,
+                        help="Conv frontend kernel size (IDEA1)")
+    parser.add_argument('--conv_epoch', type=int, default=2,
+                        help="Conv frontend training epochs (IDEA1)")
 
     # ------------------------------------------------------------------------
     # 【行级】网络功能开关（布尔标志）

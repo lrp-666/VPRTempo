@@ -199,3 +199,55 @@ def apply_itp_conv(out, layer):
         observed = (out.pre_wta > 0).float().mean(dim=(2, 3), keepdim=True)  # [1,C,1,1]
         layer.thr.data += layer.eta_ip * (observed - layer.fire_rate)
         layer.thr.data.clamp_(min=0)                                          # 对齐 blitnet.py:606
+
+
+# ================================================================================
+# 函数：train_conv_layer —— conv 层的训练循环（S2.5）
+# ================================================================================
+# 结构镜像 VPRTempoTrain.train_model（VPRTempoTrain.py:327-485），但有三点不同：
+#   1. epoch 数用 model.conv_epoch（独立参数），T = 图像数 × conv_epoch（独立退火，
+#      不共用 model.T —— conv 层步数与 feature/output 层不同，共用会退火错误）；
+#   2. 每样本：reshape → forward（含 WTA/池化）→ calc_stdp_conv → apply_itp_conv；
+#   3. 无 Spike Forcing / idx（无监督，不需要标签）。
+# ================================================================================
+def train_conv_layer(train_loader, layer, model, model_num=0):
+    """
+    ================================================================================
+    【函数级注释】训练单个模块的 conv 前端（无监督 STDP + ITP）
+    ================================================================================
+    参数：
+        train_loader — DataLoader，每次返回 (spikes [1, H*W], labels)
+        layer        — ConvSNNLayer 实例（models[i].conv_layer）
+        model        — 当前 VPRTempoTrain 实例（取 device / conv_epoch / pre_mode / agg_mode）
+        model_num    — 模块序号（进度条显示用）
+    ================================================================================
+    """
+    from tqdm import tqdm
+
+    n_imgs = len(train_loader.dataset)
+    T = int(n_imgs * model.conv_epoch)          # 独立退火总步数（S2.5 卡片）
+    pbar = tqdm(total=T, desc=f"Module {model_num + 1} conv_layer", position=0)
+
+    # 保存初始学习率（对齐 train_model 的 detach 副本做法）
+    init_itp = layer.eta_ip.detach()
+    init_stdp = layer.eta_stdp.detach()
+    mod = 0
+    pre_mode = getattr(model, 'pre_mode', 'centered')
+    agg_mode = getattr(model, 'agg_mode', 'mean')
+
+    for _ in range(model.conv_epoch):
+        for spikes, _ in train_loader:
+            spikes = spikes.to(model.device)
+            x = layer.reshape_input(spikes)              # [1,1,H,W]
+            out = layer(x)                               # 前向 + WTA + 池化
+            calc_stdp_conv(x, out, layer, pre_mode=pre_mode, agg_mode=agg_mode)
+            apply_itp_conv(out, layer)
+
+            # 学习率退火 (1−t/T)²，每 100 步一次（镜像 _anneal_learning_rate 但用 conv 的 T）
+            if mod % 100 == 0:
+                pt = pow(float(T - mod) / T, 2)
+                layer.eta_ip = torch.mul(init_itp, pt)
+                layer.eta_stdp = torch.mul(init_stdp, pt)
+            mod += 1
+            pbar.update(1)
+    pbar.close()

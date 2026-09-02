@@ -1,9 +1,14 @@
 {
-  "exp_id": "smoke100",
+  "exp_id": "smoke100_b2",
   "seed": 0,
-  "phase": "eval",
-  "wall_time_s": 0.57,
-  "device": "CPU",
+  "phase": "trackB",
+  "feature_point": "conv_frontend_pooled",
+  "feature_dim": 1152,
+  "n_db_rows": 200,
+  "n_query": 100,
+  "n_seasons": 2,
+  "wall_time_s": 1.23,
+  "device": "cpu",
   "config": {
     "dataset": "nordland",
     "data_dir": "/mnt/d/Data/datasets/vpr/Nordland",
@@ -24,19 +29,26 @@
     "PR_curve": true,
     "sim_mat": false,
     "run_demo": false,
-    "exp_id": "smoke100",
+    "exp_id": "smoke100_b2",
     "seed": 0,
     "patch_norm": "on",
-    "frontend": "none"
+    "frontend": "conv_stdp",
+    "wta_mode": "local",
+    "wta_block": 4,
+    "agg_mode": "mean",
+    "pre_mode": "centered",
+    "conv_channels": 32,
+    "conv_kernel": 5,
+    "conv_epoch": 2
   },
   "recallAtK": {
-    "1": 0.99,
-    "5": 1.0,
-    "10": 1.0,
-    "15": 1.0,
-    "20": 1.0,
+    "1": 0.93,
+    "5": 0.98,
+    "10": 0.99,
+    "15": 0.99,
+    "20": 0.99,
     "25": 1.0
   },
-  "recallAt100precision": 0.98989898989899,
-  "precisionAt100recall": 0.99
+  "recallAt100precision": 0.7742,
+  "precisionAt100recall": 0.9394
 }

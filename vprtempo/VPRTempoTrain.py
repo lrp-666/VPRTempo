@@ -54,6 +54,7 @@ from tqdm import tqdm                    # 进度条库：训练循环可视化
 from torch.utils.data import DataLoader  # PyTorch 数据加载器：批量、多进程、打乱
 from vprtempo.src.loggers import model_logger         # 模型配置日志打印函数
 from vprtempo.src.dataset import CustomImageDataset, ProcessImage  # 自定义数据集与图像预处理
+from vprtempo.src import conv_frontend as cf  # IDEA1 S2.5：卷积前端桥接（frontend='none' 时零开销）
 
 
 # ================================================================================
@@ -159,7 +160,22 @@ class VPRTempoTrain(nn.Module):
         #   输出层 (LO)   = 每个模块的地点数
         # 例：dims=[56,56] → input=3136, feature=6272
         # ----------------------------------------
-        self.input = int(dims[0] * dims[1])       # 图像像素数 = 输入神经元数
+        # -----------------------------------------------------------------------------
+        # 【IDEA1 S2.5】conv 前端注册（frontend != 'none' 时）
+        # -----------------------------------------------------------------------------
+        # conv 层必须在 feature_layer 之前加入 layer_dict（顺序 0 → 逐层训练时先训 conv）。
+        # 维度重算（ADR-1）：feature_layer 的输入不再是 H*W，而是 conv 池化后的 flat_dim
+        # （28×28 / C=32 / k=5 / local WTA 4×4 → 32×6×6 = 1152）。
+        # frontend='none'（B0 默认路径）时此分支完全不触发，行为与原来一致。
+        # -----------------------------------------------------------------------------
+        if getattr(self, 'frontend', 'none') != 'none':
+            conv_layer = cf.build_conv_layer(self, dims, self.device, inference=False)
+            setattr(self, 'conv_layer', conv_layer)
+            self.layer_dict['conv_layer'] = self.layer_counter
+            self.layer_counter += 1
+            self.input = conv_layer.flat_dim      # 维度重算（ADR-1）
+        else:
+            self.input = int(dims[0] * dims[1])   # 图像像素数 = 输入神经元数
         self.feature = int(self.input * 2)        # 特征层神经元数 = 2 * 输入
         if not out_dim_remainder is None:
             self.output = out_dim_remainder       # 余数模块使用实际的余数输出数
@@ -431,8 +447,12 @@ class VPRTempoTrain(nn.Module):
                     with torch.no_grad():         # 禁用梯度计算上下文
                         for prev_layer_name in prev_layers:  # 遍历所有已训练层
                             prev_layer = getattr(model, prev_layer_name)  # 获取层对象
-                            spikes = self.forward(spikes, prev_layer)      # 前向传播：W*x
-                            spikes = bn.clamp_spikes(spikes, prev_layer)   # 钳制到 [0, 0.9]
+                            # 【IDEA1 S2.5】conv 层走 conv 前向路径（reshape→conv→WTA→池化→flatten）
+                            if cf.is_conv_layer(prev_layer):
+                                spikes = cf.conv_forward(prev_layer, spikes)
+                            else:
+                                spikes = self.forward(spikes, prev_layer)      # 前向传播：W*x
+                                spikes = bn.clamp_spikes(spikes, prev_layer)   # 钳制到 [0, 0.9]
                 else:
                     prev_layer = None             # 无已训练层时设为 None，供 calc_stdp 使用
                 
@@ -745,6 +765,23 @@ def train_new_model(models, model_name):
                 persistent_workers=persistent_workers,
                 **loader_kwargs
             )
+            
+            # -----------------------------------------------------------------
+            # 【IDEA1 S2.5】conv 层分发：训练方式与 SNNLayer 不同（无监督 STDP+ITP）
+            #   - i == 0：正常训练（train_conv_layer）
+            #   - i > 0 ：多模块共享前端——直接拷贝 module 0 训好的权重（S2.5 卡片：
+            #             "通用视觉特征"，省算力且保持模块间特征空间一致）
+            #   - frozen（B1 random_conv / B5 Gabor）：跳过训练，直接进已训练层列表
+            # -----------------------------------------------------------------
+            if cf.is_conv_layer(layer):
+                if getattr(layer, 'frozen', False):
+                    pass                                      # 冻结前端：不训练
+                elif i == 0:
+                    cf.train_conv_layer(train_loader, layer, model, model_num=i)
+                else:
+                    layer.load_state_dict(models[0].conv_layer.state_dict())
+                model.to(torch.device("cpu"))
+                continue
             
             # -----------------------------------------------------------------
             # 【行级注释】调用当前模块的 train_model 训练当前层

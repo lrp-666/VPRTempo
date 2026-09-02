@@ -77,6 +77,7 @@ from vprtempo.src.download import get_data_model
 from vprtempo.src.metrics import recallAtK, createPR
 from vprtempo.src.gt import build_ground_truth
 from vprtempo.src.dataset import CustomImageDataset, ProcessImage
+from vprtempo.src import conv_frontend as cf  # IDEA1 S2.5：卷积前端桥接（frontend='none' 时零开销）
 
 
 # ================================================================================
@@ -204,7 +205,18 @@ class VPRTempo(nn.Module):
         #           若 out_dim_remainder 不为 None（最后一个模块且不能整除），
         #           则使用 remainder，否则使用 out_dim。
         # ----------------------------------------
-        self.input = int(self.dims[0]*self.dims[1])
+        # -----------------------------------------------------------------------------
+        # 【IDEA1 S2.5】conv 前端注册（推理侧，inference=True，与训练侧维度严格一致）
+        # frontend='none'（B0 默认路径）时此分支完全不触发。
+        # -----------------------------------------------------------------------------
+        if getattr(self, 'frontend', 'none') != 'none':
+            conv_layer = cf.build_conv_layer(self, list(self.dims), self.device, inference=True)
+            setattr(self, 'conv_layer', conv_layer)
+            self.layer_dict['conv_layer'] = self.layer_counter
+            self.layer_counter += 1
+            self.input = conv_layer.flat_dim      # 维度重算（ADR-1，与训练侧一致）
+        else:
+            self.input = int(self.dims[0]*self.dims[1])
         self.feature = int(self.input * 2)
         if not out_dim_remainder is None:
             self.output = out_dim_remainder
@@ -336,10 +348,18 @@ class VPRTempo(nn.Module):
         # ================================================================================
         self.inferences = [] # 存储每个模块的 nn.Sequential 推理链，每个元素对应一个模块
         for model in models:
-            self.inferences.append(nn.Sequential(
-                model.feature_layer.w,
-                model.output_layer.w,
-            ))
+            # 【IDEA1 S2.5】conv 前端：推理链前加 ConvFrontendModule（平向量→conv→pooled_flat）
+            if hasattr(model, 'conv_layer'):
+                self.inferences.append(nn.Sequential(
+                    cf.ConvFrontendModule(model.conv_layer),
+                    model.feature_layer.w,
+                    model.output_layer.w,
+                ))
+            else:
+                self.inferences.append(nn.Sequential(
+                    model.feature_layer.w,
+                    model.output_layer.w,
+                ))
             # 将构建好的 Sequential 移动到计算设备（GPU/CPU）上
             self.inferences[-1].to(torch.device(self.device))
         
