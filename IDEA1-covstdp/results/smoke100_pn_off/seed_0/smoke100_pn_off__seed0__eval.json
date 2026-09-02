@@ -1,8 +1,8 @@
 {
-  "exp_id": "smoke100",
+  "exp_id": "smoke100_pn_off",
   "seed": 0,
   "phase": "eval",
-  "wall_time_s": 0.59,
+  "wall_time_s": 0.61,
   "device": "CPU",
   "config": {
     "dataset": "nordland",
@@ -24,9 +24,9 @@
     "PR_curve": true,
     "sim_mat": false,
     "run_demo": false,
-    "exp_id": "smoke100",
+    "exp_id": "smoke100_pn_off",
     "seed": 0,
-    "patch_norm": "on",
+    "patch_norm": "off",
     "frontend": "none"
   },
   "recallAtK": {
@@ -37,5 +37,5 @@
     "20": 1.0,
     "25": 1.0
   },
-  "recallAt100precision": 1.0
+  "recallAt100precision": 0.9595959595959596
 }

@@ -691,7 +691,7 @@ def run_inference(models, model_name):
     
     # 创建图像预处理流水线：
     #   ProcessImage 内部执行：RGB→灰度→Gamma校正→缩放→块归一化→脉冲编码
-    image_transform = ProcessImage(model.dims, model.patches)
+    image_transform = ProcessImage(model.dims, model.patches, patch_norm=getattr(model, 'patch_norm', 'on') == 'on')
     
     # 构建查询数据集：
     #   annotations_file : 查询图像的 CSV 标注文件路径

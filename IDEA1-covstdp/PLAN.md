@@ -402,7 +402,7 @@ layer.w.weight.data += layer.eta_stdp * dK
 
 **关键设计决策（pre 端形式：中心化是必要条件，不是可选项）**：
 
-*问题分析（直流塌缩）*：PatchNorm on 时平坦区域像素被映射为 127.5（幅度 0.5，dataset.py:429），**输入处处 ≥ 0 且背景恒为 0.5**。在幅度加权规则 `dK = η·(0.5−post)·pre_patch` 下，`pre_patch` 每元素 ≥ 0、`(0.5−post)` 对标量同号——k² 个权重每次同向移动、移动量正比于 pre 幅度。配合保范数归一化，该规则的**不动点是"该通道所有获胜 patch 的归一化加权均值"**，其中含强直流分量：核会收敛成"均匀亮斑 + 微弱结构残差"，Gabor 拟合 R² 必然难看。且兴奋核 clamp(min=0) 使权重无法取负，永远拼不出中心-外周的正负瓣结构。
+*问题分析（直流塌缩）*：spike 编码后的输入**处处 ≥ 0**。实测分布（S1.2 直方图证据 `results/input_histogram_patchnorm.png`，50 张 Nordland spring）：PatchNorm on 时 z-score 被 clip 到 [-1,1]（dataset.py:191），映射后近似均匀分布 + 0/1 边界尖峰，mean≈0.485（"背景恒为 0.5"的直觉不准确——平坦区域只占约 3.5%）；off 时为 gamma 校正后的钟形分布，mean≈0.496，**也无近零暗背景**。在幅度加权规则 `dK = η·(0.5−post)·pre_patch` 下，`pre_patch` 每元素 ≥ 0、`(0.5−post)` 对标量同号——k² 个权重每次同向移动、移动量正比于 pre 幅度。配合保范数归一化，该规则的**不动点是"该通道所有获胜 patch 的归一化加权均值"**，其中含强直流分量（两种模式下都是）：核趋向"均值模板"，Gabor 拟合 R² 会变差，且兴奋核 clamp(min=0) 使权重无法取负，拼不出中心-外周的正负瓣结构。
 
 *裁决*：`pre_mode ∈ {'centered', 'amp', 'heaviside'}` 三选一，**默认 `'centered'`**：
 ```python
@@ -410,7 +410,7 @@ pre_term = (pre_patch - 0.5) if pre_mode == 'centered' else \
            pre_patch if pre_mode == 'amp' else (pre_patch > 0.5).float()
 ```
 - `centered`：不动点变为"获胜 patch 相对背景的平均偏离模式"——那才是边缘/纹理结构。低于背景的位置获得负更新（被 clamp 压向 0），高于背景的位置持续增强 → 稀疏化 + 方向性自然涌现。
-- `amp` / `heaviside`：消融对照，用于在 **Table 3b**（S3.3 新增：B2 限定 patch_norm{on,off} × pre_mode{centered,amp} 2×2）里量化"直流塌缩"假设的解释力（amp + PatchNorm on 应明显差于 centered + on；off 时差距收窄——off 时暗像素→0 本身就近似中心化）。
+- `amp` / `heaviside`：消融对照，用于在 **Table 3b**（S3.3 新增：B2 限定 patch_norm{on,off} × pre_mode{centered,amp} 2×2）里量化"直流塌缩"假设的解释力。修正后的预期（依据实测直方图）：**amp 在 on/off 下都应差于 centered**——off 模式实测也无近零暗背景（gamma 校正抬升暗部），不再"近似中心化"；on/off 的差异更多体现在 patch 内容结构上而非直流。
 - 语义说明：blitnet 的 spike forcing 分支本就用幅度而非 Θ(pre)（blitnet.py:484/494），中心化偏离在论文中注明理由（PatchNorm 值域偏移所致）。
 
 **详细操作**：
@@ -564,7 +564,7 @@ conv2（k=5, 无 padding）：28 → 24
    - 理论锚点（写进方法论）：k 应与 PatchNorm 窗口同量级或更小——28×28 下 patches=7，k=5 ≈ 0.7×7 合理；k=1 退化为逐点变换（无空间结构），k=H 退化为全局模板匹配（≈全连接），最优值必在中间，{3,5,7} 覆盖低/中/高段。
    - **主文坚持单一 k**：多尺度并联（Inception 式 3/5/7）使前端算力 ×3、叙事变浑，且低分辨率 VPR 图上多尺度收益有限；若审稿人要求，作为附录消融（3/5/7 并联、通道三等分保持总 C 不变），届时基础设施齐全，成本约一天算力。
 3. **Table 3（PatchNorm 2×4，本文最独特分析）**：PatchNorm {on,off} × {B0,B1,B2,B3}，双轨。假设：on 时 Conv-STDP 增益收窄（局部高通已提取边缘，conv 没新东西可学）、off 时增益放大。**两个方向都有结论可写**：收窄 → "VPRTempo 预处理已隐式完成卷积前端的工作"；放大 → "conv 前端与朴素编码互补"。按实际方向组织叙事。
-4. **Table 3b（直流塌缩的直接证据格）**：B2 限定，patch_norm {on,off} × pre_mode {centered,amp} 2×2，双轨。预期 amp+on 明显差于 centered+on（直流塌缩实证）、off 时差距收窄（off 时暗像素→0 本身近似中心化）。这是 S2.3 设计决策的量化验证，也是审稿人问"为什么 centered"时的数据答案。
+4. **Table 3b（直流塌缩的直接证据格）**：B2 限定，patch_norm {on,off} × pre_mode {centered,amp} 2×2，双轨。修正后的预期（依据 S1.2 实测直方图）：amp 在 on/off 下都应明显差于 centered（off 模式实测无近零暗背景，两种模式输入都处处 ≥0）；on/off 差异更多体现 patch 内容结构差异。这是 S2.3 设计决策的量化验证，也是审稿人问"为什么 centered"时的数据答案。
 4. **conv epoch ∈ {1,2,4}**（附录）：验证 STDP 收敛与过拟合（无监督也会过拟合：核塌缩 / winner 垄断）。
 5. **E/I 通道拆分消融**（Table 2 附属行，一个开关）：{E/I 拆分（默认） vs 全兴奋核}，固定 B2 主组合，双轨。背景：blitnet 中抑制的三个经典角色在卷积前端里有两个已被替代——竞争由显式 WTA 接管（Diehl&Cook/Kheradpisheh 用侧抑制实现 WTA）、稳态由 WTA 稀疏 + 保范数归一化 + ITP 承担（homeostasis 默认关）；剩下唯一角色是"反对比度模式检测"的特征多样性，且 centered pre-term 下兴奋核更新已带符号，抑制核边际贡献未经验证。两种结果都可写：全兴奋 ≈ E/I → 显式 WTA 接管了抑制的经典角色（有意思的发现）；E/I 明显更好 → BLiTNet 的 E/I 思想在卷积域同样承重。
 6. **编码探索（附录，可选）**：主实验一律用原始单步幅度编码（`SetImageAsSpikes`，像素/255），理由：①B0–B3 可比性，唯一变量是 conv 前端；②换多步编码（发放率/时延）会摧毁"无多步仿真"卖点——那是 SpikingJelly 参照行（S3.5）的领地。可选探索：**ON/OFF 双通道编码**（签名信号拆正/负两通道，类 DoG 中心-外周），与 conv-STDP 预期的中心-外周核结构天然契合；做则只跑 B2 主配置轨 B，作为附录一小节。注意它会改变输入通道数（1→2），不进主表。
@@ -643,8 +643,8 @@ conv2（k=5, 无 padding）：28 → 24
 | 7 | 时间线瘦身预案 | 窗口期紧张时的砍单顺序：编码探索（S3.3 第 6 条）→ B3 → ORC（B5 便宜且叙事价值高，最后砍） |
 
 ### 总检查清单
-- [ ] S1.1 配置系统与 run_exp.py
-- [ ] S1.2 PatchNorm 开关化
+- [x] S1.1 配置系统与 run_exp.py
+- [x] S1.2 PatchNorm 开关化
 - [ ] S1.3 seed 三件套
 - [ ] S1.4 eval_retrieval.py（轨 B）
 - [ ] S1.5 B0 双轨基线（Gate 0）

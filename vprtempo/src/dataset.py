@@ -343,11 +343,15 @@ class SetImageAsSpikes:
 #   自适应 Gamma 根据图像均值调整对比度，使不同条件下的图像具有相似的动态范围。
 # ================================================================================
 class ProcessImage:  #TODO VPRTempoTrain常用
-    def __init__(self, dims, patches):
+    def __init__(self, dims, patches, patch_norm=True):
         # ---- 行级：目标缩放尺寸 [H, W]，默认 [56, 56]，决定 SNN 输入神经元数量 ----
         self.dims = dims
         # ---- 行级：Patch Normalization 的窗口大小，如 15，需为奇数以保证中心对称 ----
         self.patches = patches
+        # ---- IDEA1 S1.2：PatchNorm 开关（默认 True，保持原有行为）。
+        #      False 时跳过局部块归一化（Step 4）与配套的 [-1,1]→[0,255] 映射（Step 5），
+        #      resize 后的图直接 clamp 到 [0,255] 转 uint8。----
+        self.patch_norm = patch_norm
 
     def __call__(self, img):
         # ================================================================================
@@ -418,15 +422,24 @@ class ProcessImage:  #TODO VPRTempoTrain常用
         img = img.squeeze(0)
 
         # ==================== Step 4: Patch Normalization ====================
-        # ---- 行级：实例化局部归一化器 ----
-        patch_normaliser = PatchNormalisePad(self.patches)
-        # ---- 行级：执行归一化，输出值域约 [-1, 1] ----
-        im_norm = patch_normaliser(img)
+        if self.patch_norm:
+            # ---- 行级：实例化局部归一化器 ----
+            patch_normaliser = PatchNormalisePad(self.patches)
+            # ---- 行级：执行归一化，输出值域约 [-1, 1] ----
+            im_norm = patch_normaliser(img)
 
-        # ==================== Step 5: 映射到 uint8 ====================
-        # ---- 行级：将 [-1, 1] 线性映射到 [0, 255]：
-        #           -1 → 0，0 → 127.5，1 → 255 ----
-        img = (255.0 * (1 + im_norm) / 2.0).to(dtype=torch.uint8)
+            # ==================== Step 5: 映射到 uint8 ====================
+            # ---- 行级：将 [-1, 1] 线性映射到 [0, 255]：
+            #           -1 → 0，0 → 127.5，1 → 255 ----
+            img = (255.0 * (1 + im_norm) / 2.0).to(dtype=torch.uint8)
+        else:
+            # ---- IDEA1 S1.2：patch_norm=off 分支 ----
+            # 跳过 PatchNorm 与配套的 [-1,1]→[0,255] 映射（后者是为 [-1,1] 值域设计的），
+            # resize/gamma 后的图（值域约 [0,255]）直接 clamp 转 uint8。
+            # 效果：暗背景保持接近 0（对比 on 分支平坦区域恒为 127.5）。
+            # 注意 squeeze(0)：on 分支的 PatchNormalisePad 输出是 [H,W]（无通道维），
+            # 而此处 img 是 [1,H,W]，需对齐维度后再进入下方共享的 unsqueeze。
+            img = img.squeeze(0).clip(0, 255).to(dtype=torch.uint8)
         # ---- 行级：增加通道维，变为 [1, H, W]，匹配 SetImageAsSpikes 输入要求 ----
         img = torch.unsqueeze(img, 0)
 

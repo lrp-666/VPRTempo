@@ -295,7 +295,7 @@ def run_inference_quant(models, model_name):
     # Set first index model as the main model for parameters
     model = models[0]
     # Initialize the image transforms
-    image_transform = ProcessImage(model.dims, model.patches)
+    image_transform = ProcessImage(model.dims, model.patches, patch_norm=getattr(model, 'patch_norm', 'on') == 'on')
     
     # Initialize the test dataset
     test_dataset = CustomImageDataset(annotations_file=model.dataset_file, 

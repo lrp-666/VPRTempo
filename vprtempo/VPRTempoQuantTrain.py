@@ -246,7 +246,7 @@ def train_new_model_quant(models, model_name):
     model = models[0]
     # Initialize the image transforms and datasets
     image_transform = transforms.Compose([
-        ProcessImage(model.dims, model.patches)
+        ProcessImage(model.dims, model.patches, patch_norm=getattr(model, 'patch_norm', 'on') == 'on')
     ])
     # Automatically generate user_input_ranges
     user_input_ranges = []

@@ -440,6 +440,10 @@ def parse_network():
                             help="Number of patches to generate for patch normalization image into")
     parser.add_argument('--dims', type=str, default="56,56",
                         help="Dimensions to resize the image to")
+    # --patch_norm: IDEA1 S1.2 新增。PatchNorm 开关，默认 on（不改变现有行为）。
+    # off 时 ProcessImage 跳过局部块归一化，用于 PatchNorm × 前端交互消融（Table 3）。
+    parser.add_argument('--patch_norm', type=str, default='on', choices=['on', 'off'],
+                        help="Enable/disable patch normalization in preprocessing (IDEA1)")
 
     # ------------------------------------------------------------------------
     # 【行级】网络功能开关（布尔标志）

@@ -621,7 +621,7 @@ def train_new_model(models, model_name):
     # ProcessImage 内部执行：RGB→灰度 → Gamma校正 → 缩放 → 块归一化 → 脉冲编码
     # -----------------------------------------------------------------------------
     image_transform = transforms.Compose([
-        ProcessImage(model.dims, model.patches)
+        ProcessImage(model.dims, model.patches, patch_norm=getattr(model, 'patch_norm', 'on') == 'on')
     ])
     
     # ----------------------------------------
