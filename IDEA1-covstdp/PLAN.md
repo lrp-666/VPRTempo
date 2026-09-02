@@ -646,7 +646,7 @@ conv2（k=5, 无 padding）：28 → 24
 - [x] S1.1 配置系统与 run_exp.py
 - [x] S1.2 PatchNorm 开关化
 - [x] S1.3 seed 三件套
-- [ ] S1.4 eval_retrieval.py（轨 B）
+- [x] S1.4 eval_retrieval.py（轨 B）
 - [ ] S1.5 B0 双轨基线（Gate 0）
 - [ ] S2.1 ConvSNNLayer 前向
 - [ ] S2.2 WTA 三变体
