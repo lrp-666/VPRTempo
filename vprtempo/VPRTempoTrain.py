@@ -43,6 +43,7 @@ import os       # 操作系统接口：路径拼接、文件存在性检查
 import gc       # 垃圾回收：训练结束后手动释放显存
 import torch    # PyTorch 核心库：张量运算、神经网络、CUDA 支持
 import sys      # 系统接口：sys.exit() 用于退出程序
+import random   # IDEA1 S1.3：worker_init_fn 中固定 worker 随机种子
 
 import numpy as np                     # NumPy：数值计算，此处用于 np.mod 取模
 import torch.nn as nn                  # PyTorch 神经网络模块：nn.Module 基类
@@ -717,6 +718,8 @@ def train_new_model(models, model_name):
             #   shuffle=True          — 打乱顺序，防止网络记住时序而非学习特征
             #   num_workers           — MPS 设备必须为 0（MPS 不支持多进程）
             #   persistent_workers    — 是否保持工作进程存活，此处设为 False
+            # 【IDEA1 S1.3】model.seed 非 None 时附加 generator 与 worker_init_fn，
+            #   使 shuffle 顺序与 worker 内随机序列可复现；为 None 时保持原行为。
             # -----------------------------------------------------------------
             if model.device == "mps":
                 num_workers = 0
@@ -724,12 +727,23 @@ def train_new_model(models, model_name):
             else:
                 num_workers = 4
                 persistent_workers = False
+            loader_kwargs = {}
+            if getattr(model, 'seed', None) is not None:
+                g = torch.Generator()
+                g.manual_seed(model.seed)
+                loader_kwargs["generator"] = g
+                def _seed_worker(worker_id):
+                    ws = (torch.initial_seed() + worker_id) % 2**32
+                    np.random.seed(ws)
+                    random.seed(ws)
+                loader_kwargs["worker_init_fn"] = _seed_worker
             train_loader = DataLoader(
                 train_dataset,
                 batch_size=1,              # SNN 时序编码要求 batch_size=1
                 shuffle=True,              # 打乱顺序，防止过拟合时序
                 num_workers=num_workers,   # 数据加载的子进程数
-                persistent_workers=persistent_workers
+                persistent_workers=persistent_workers,
+                **loader_kwargs
             )
             
             # -----------------------------------------------------------------

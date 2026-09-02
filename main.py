@@ -215,6 +215,20 @@ def initialize_and_run_model(args, dims):
     ================================================================================
     """
     # ================================================================================
+    # 【IDEA1 S1.3】可选种子固定（默认 args.seed=None 时完全跳过，行为与原来一致）
+    # 必须在创建任何模型/DataLoader 之前执行：blitnet.addWeights 的稀疏化用
+    # np.random（blitnet.py:308），权重初始化用 torch.normal_（blitnet.py:290），
+    # 两者都在这里覆盖。DataLoader 的 shuffle 顺序由 train_new_model 内的
+    # generator/worker_init_fn 负责（使用 model.seed）。
+    # ================================================================================
+    if getattr(args, 'seed', None) is not None:
+        import random as _random
+        import numpy as _np
+        torch.manual_seed(args.seed)
+        _np.random.seed(args.seed)
+        _random.seed(args.seed)
+
+    # ================================================================================
     # 【行级/块级】计算模块数量（对应 III-B 模块化）
     # ================================================================================
     # 当 database_places > max_module 时，将数据库拆分为多个不重叠的模块。
@@ -444,6 +458,10 @@ def parse_network():
     # off 时 ProcessImage 跳过局部块归一化，用于 PatchNorm × 前端交互消融（Table 3）。
     parser.add_argument('--patch_norm', type=str, default='on', choices=['on', 'off'],
                         help="Enable/disable patch normalization in preprocessing (IDEA1)")
+    # --seed: IDEA1 S1.3 新增。默认 None = 不做任何种子固定（保持原有非确定性行为）。
+    # 提供时固定 torch/numpy/random 三件套 + DataLoader shuffle 生成器。
+    parser.add_argument('--seed', type=int, default=None,
+                        help="Random seed for reproducibility (IDEA1); default None = unseeded (original behavior)")
 
     # ------------------------------------------------------------------------
     # 【行级】网络功能开关（布尔标志）
