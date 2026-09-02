@@ -1,0 +1,4 @@
+{
+  "_comment": "本机覆盖配置（不提交 git）。data_dir 等机器相关路径写在这里。",
+  "data_dir": "/mnt/d/Data/datasets/vpr/Nordland"
+}

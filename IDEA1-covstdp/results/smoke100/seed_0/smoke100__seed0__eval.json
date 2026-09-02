@@ -1,0 +1,41 @@
+{
+  "exp_id": "smoke100",
+  "seed": 0,
+  "phase": "eval",
+  "wall_time_s": 0.6,
+  "device": "CPU",
+  "config": {
+    "dataset": "nordland",
+    "data_dir": "/mnt/d/Data/datasets/vpr/Nordland",
+    "database_places": 100,
+    "query_places": 100,
+    "max_module": 100,
+    "database_dirs": "spring,fall",
+    "query_dir": "summer",
+    "GT_tolerance": 0,
+    "skip": 0,
+    "filter": 8,
+    "epoch": 4,
+    "patches": 7,
+    "dims": "28,28",
+    "train_new_model": false,
+    "quantize": false,
+    "model_name": null,
+    "PR_curve": true,
+    "sim_mat": false,
+    "run_demo": false,
+    "exp_id": "smoke100",
+    "seed": 0,
+    "patch_norm": "on",
+    "frontend": "none"
+  },
+  "recallAtK": {
+    "1": 0.97,
+    "5": 1.0,
+    "10": 1.0,
+    "15": 1.0,
+    "20": 1.0,
+    "25": 1.0
+  },
+  "recallAt100precision": 0.8969072164948454
+}
