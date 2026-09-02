@@ -1,0 +1,41 @@
+{
+  "exp_id": "b0_1000",
+  "seed": 0,
+  "phase": "eval",
+  "wall_time_s": 12.19,
+  "device": "CPU",
+  "config": {
+    "dataset": "nordland",
+    "data_dir": "/mnt/d/Data/datasets/vpr/Nordland",
+    "database_places": 1000,
+    "query_places": 1000,
+    "max_module": 1000,
+    "database_dirs": "spring,fall",
+    "query_dir": "summer",
+    "GT_tolerance": 0,
+    "skip": 0,
+    "filter": 8,
+    "epoch": 4,
+    "patches": 7,
+    "dims": "28,28",
+    "train_new_model": false,
+    "quantize": false,
+    "model_name": null,
+    "PR_curve": true,
+    "sim_mat": false,
+    "run_demo": false,
+    "exp_id": "b0_1000",
+    "seed": 0,
+    "patch_norm": "on",
+    "frontend": "none"
+  },
+  "recallAtK": {
+    "1": 0.89,
+    "5": 0.96,
+    "10": 0.97,
+    "15": 0.98,
+    "20": 0.98,
+    "25": 0.99
+  },
+  "recallAt100precision": 0.372615039281706
+}
