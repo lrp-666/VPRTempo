@@ -648,8 +648,8 @@ conv2（k=5, 无 padding）：28 → 24
 - [x] S1.3 seed 三件套
 - [x] S1.4 eval_retrieval.py（轨 B）
 - [x] S1.5 B0 双轨基线（Gate 0）✅ 通过（results/table_baseline_b0.md）
-- [ ] S2.1 ConvSNNLayer 前向
-- [ ] S2.2 WTA 三变体
+- [x] S2.1 ConvSNNLayer 前向（src/conv_snn_layer.py，sanity 15/15 通过）
+- [x] S2.2 WTA 三变体（winner_mask 结构性断言 + results/wta_mask_demo.png）
 - [ ] S2.3 calc_stdp_conv（聚合 + 钳制 + 归一化）
 - [ ] S2.4 卷积 ITP
 - [ ] S2.5 接入 train_new_model + 推理侧 + 共享前端
