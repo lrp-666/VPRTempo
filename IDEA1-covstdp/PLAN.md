@@ -365,12 +365,14 @@ layer.w.weight.data += layer.eta_stdp * dK
 
 **详细操作**：
 1. `ConvSNNLayer(nn.Module)`，构造参数对齐 SNNLayer 风格：`in_channels, out_channels, kernel_size, thr_range=[0,0.5], fire_rate=[0.2,0.9], ip_rate=0.15, stdp_rate=0.005, p=[p_exc,p_inh], device, inference`。
-2. 权重：`self.w = nn.Conv2d(in_ch, out_ch, k, bias=False)`。E/I 结构照搬 blitnet 思想但**按核（输出通道）分配兴奋/抑制角色**而非按元素：初始化时按 p_exc 比例随机指定若干通道为兴奋核、其余为抑制核，掩码形状 [C_out]。理由：卷积核权值共享，按元素稀疏会破坏感受野内的结构学习；按通道分 E/I 保留 BLiTNet 的 E/I 平衡思想且适配卷积。**这个对 blitnet 的偏离要在论文里写明并给理由。**
+2. 权重：`self.w = nn.Conv2d(in_ch, out_ch, k, bias=False)`。E/I 结构照搬 blitnet 思想但**按核（输出通道）分配兴奋/抑制角色**而非按元素：初始化时按 p_exc 比例随机指定若干通道为兴奋核（≥0）、其余为抑制核（≤0），掩码形状 [C_out]。理由：卷积核权值共享，按元素稀疏会破坏感受野内的结构学习；按通道分 E/I 保留 BLiTNet 的 E/I 平衡思想且适配卷积。
+   **设计修订（fork B 玩具测试发现）**：符号约束的抑制核在前向 `clamp(conv(x)−thr, min=0)` 下**先天性死亡**——负核对非负输入的卷积输出恒负，clamp 后恒 0（实测抑制通道发放率精确 0.0000，占半数通道）。修复：**抑制通道重新解释为 OFF 检测器**，前向改为响应负相关 `z_inh = −conv(x)`（兴奋通道 = ON 检测器）。E/I 由此从"权重符号约束"升级为"ON/OFF 双通路"功能分工：非负输入编码下，符号约束的核只能表达模式空间的一半，ON/OFF 双通道在不引入带符号权重的情况下恢复完整带符号模式空间（"负瓣由 OFF 通道表达"——与 B5 不对称性声明、S3.3-7 ON/OFF 编码探索一脉相承）。STDP 更新数学不变（抑制通道 −η 更新 ⇔ 核更负 ⇔ OFF 响应更强）。**这个对 blitnet 的偏离与修订理由要在论文里写明。**
 3. 初始化用 `addWeights` 的卷积版：正态采样（mean=范围中点，std=跨度/6，3σ 原则，blitnet.py:277-280）→ 按符号裁剪（blitnet.py:298-301）→ **每核 L1 归一化**（对应 blitnet.py:319-325，归一化单位从"列"变"核"）。
 4. 前向：
    ```python
    def forward(self, x):            # x: [1, 1, H, W]（由调用方从 [1, H*W] reshape）
        z = self.w(x)                # [1, C, H', W']
+       z = torch.where(exc_view, z, -z)   # ON/OFF：抑制通道取负（OFF 检测器，见上方修订）
        z = z - self.thr             # thr: [1, C, 1, 1]，每通道一个阈值
        z = torch.clamp(z, 0.0, 0.9) # 对齐 clamp_spikes（blitnet.py:385）
        return z
@@ -566,7 +568,7 @@ conv2（k=5, 无 padding）：28 → 24
 3. **Table 3（PatchNorm 2×4，本文最独特分析）**：PatchNorm {on,off} × {B0,B1,B2,B3}，双轨。假设：on 时 Conv-STDP 增益收窄（局部高通已提取边缘，conv 没新东西可学）、off 时增益放大。**两个方向都有结论可写**：收窄 → "VPRTempo 预处理已隐式完成卷积前端的工作"；放大 → "conv 前端与朴素编码互补"。按实际方向组织叙事。
 4. **Table 3b（直流塌缩的直接证据格）**：B2 限定，patch_norm {on,off} × pre_mode {centered,amp} 2×2，双轨。修正后的预期（依据 S1.2 实测直方图）：amp 在 on/off 下都应明显差于 centered（off 模式实测无近零暗背景，两种模式输入都处处 ≥0）；on/off 差异更多体现 patch 内容结构差异。这是 S2.3 设计决策的量化验证，也是审稿人问"为什么 centered"时的数据答案。
 5. **conv epoch ∈ {1,2,4}**（附录）：验证 STDP 收敛与过拟合（无监督也会过拟合：核塌缩 / winner 垄断）。
-6. **E/I 通道拆分消融**（Table 2 附属行，一个开关）：{E/I 拆分（默认） vs 全兴奋核}，固定 B2 主组合，双轨。背景：blitnet 中抑制的三个经典角色在卷积前端里有两个已被替代——竞争由显式 WTA 接管（Diehl&Cook/Kheradpisheh 用侧抑制实现 WTA）、稳态由 WTA 稀疏 + 保范数归一化 + ITP 承担（homeostasis 默认关）；剩下唯一角色是"反对比度模式检测"的特征多样性，且 centered pre-term 下兴奋核更新已带符号，抑制核边际贡献未经验证。两种结果都可写：全兴奋 ≈ E/I → 显式 WTA 接管了抑制的经典角色（有意思的发现）；E/I 明显更好 → BLiTNet 的 E/I 思想在卷积域同样承重。
+6. **E/I 通道拆分消融**（Table 2 附属行，一个开关）：{ON/OFF 双通路（默认） vs 全兴奋核}，固定 B2 主组合，双轨。背景：fork B 已证明朴素的"权重符号 E/I"在卷积域退化为死通道（发放率精确 0），修订为 ON/OFF 双通路后抑制通道成为 OFF 检测器（反相对比模式检测）。本消融回答：OFF 通路对表征的贡献有多大？两种结果都可写：全兴奋 ≈ ON/OFF → 单极性模式空间已够用（PatchNorm 输出近似对称分布时可能出现）；ON/OFF 明显更好 → 带符号模式空间是必要的，且无需带符号权重即可实现（叙事素材）。
 6. **编码探索（附录，可选）**：主实验一律用原始单步幅度编码（`SetImageAsSpikes`，像素/255），理由：①B0–B3 可比性，唯一变量是 conv 前端；②换多步编码（发放率/时延）会摧毁"无多步仿真"卖点——那是 SpikingJelly 参照行（S3.5）的领地。可选探索：**ON/OFF 双通道编码**（签名信号拆正/负两通道，类 DoG 中心-外周），与 conv-STDP 预期的中心-外周核结构天然契合；做则只跑 B2 主配置轨 B，作为附录一小节。注意它会改变输入通道数（1→2），不进主表。
 
 **验收**：三张表齐全，每张至少一段可直接写进论文的观察。
@@ -650,8 +652,8 @@ conv2（k=5, 无 padding）：28 → 24
 - [x] S1.5 B0 双轨基线（Gate 0）✅ 通过（results/table_baseline_b0.md）
 - [x] S2.1 ConvSNNLayer 前向（src/conv_snn_layer.py，sanity 15/15 通过）
 - [x] S2.2 WTA 三变体（winner_mask 结构性断言 + results/wta_mask_demo.png）
-- [ ] S2.3 calc_stdp_conv（聚合 + 钳制 + 归一化）
-- [ ] S2.4 卷积 ITP
+- [x] S2.3 calc_stdp_conv（聚合 + 钳制 + 归一化）✅ 对拍 18/18 + 玩具测试 24/24（含 ON/OFF 设计修订：抑制核直接 clamp 先天性死亡 → 改为 OFF 检测器，见 S2.1 修订注记）
+- [x] S2.4 卷积 ITP（observed 在 WTA 前统计；修复后 ρ=1.000）
 - [ ] S2.5 接入 train_new_model + 推理侧 + 共享前端
 - [ ] S2.6 B1 Random Conv 对照
 - [ ] S2.7 B3 两层

@@ -119,22 +119,22 @@ class ConvSNNLayer(nn.Module):
         self.thr = nn.Parameter(torch.zeros([1, out_channels, 1, 1],
                                             device=device).uniform_(thr_range[0],
                                                                     thr_range[1]))
-        if inference:
-            # 推理模式只保留 w/thr（对齐 SNNLayer 推理分支）
-            return
-
-        # ----------------------------------------
-        # 训练模式：通道级 E/I + 初始化 + 学习率/目标发放率
-        # ----------------------------------------
-        if np.isscalar(thr_range): thr_range = [thr_range, thr_range]
-        if np.isscalar(fire_rate): fire_rate = [fire_rate, fire_rate]
-
-        # 通道级 E/I 掩码 [C]：按 p_exc 比例随机指定兴奋通道
+        # 通道级 E/I 掩码 [C]：按 p_exc 比例随机指定兴奋（ON）通道
+        # 推理前向同样需要它做 ON/OFF 符号翻转，故在 inference 早退之前注册
         # （卷积核权值共享，按元素稀疏会破坏感受野结构，故按通道分 E/I —— S2.1 卡片）
         n_exc = int(round(out_channels * p_exc))
         havconnExc = torch.zeros(out_channels, dtype=torch.bool, device=device)
         havconnExc[torch.randperm(out_channels, device=device)[:n_exc]] = True
         self.register_buffer('havconnExc', havconnExc)
+        if inference:
+            # 推理模式只保留 w/thr（+ havconnExc 用于 ON/OFF 前向）
+            return
+
+        # ----------------------------------------
+        # 训练模式：初始化 + 学习率/目标发放率
+        # ----------------------------------------
+        if np.isscalar(thr_range): thr_range = [thr_range, thr_range]
+        if np.isscalar(fire_rate): fire_rate = [fire_rate, fire_rate]
 
         # 学习率张量（下一个 fork 的退火机制会更新它们）
         self.eta_ip = torch.tensor(ip_rate, device=device)
@@ -198,6 +198,11 @@ class ConvSNNLayer(nn.Module):
     # ================================================================================
     def forward(self, x):
         z = self.w(x)                                        # [1, C, H', W']
+        # ON/OFF 双通路（S2.1 设计修订）：兴奋（ON）通道响应正相关；
+        # 抑制（OFF）通道响应负相关 —— 负号约束核若直接过 clamp(min=0) 会先天性死亡
+        # （实测发放率精确 0），取负后成为 OFF 检测器（反相对比模式检测）。
+        exc = self.havconnExc.view(1, -1, 1, 1)
+        z = torch.where(exc, z, -z)
         pre_wta = torch.clamp(z - self.thr, min=0.0, max=0.9)  # 对齐 clamp_spikes
 
         post_wta, winner_mask = self._apply_wta(pre_wta)
