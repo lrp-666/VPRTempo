@@ -112,12 +112,14 @@ def main():
     transform = ProcessImage(model.dims, model.patches, patch_norm=patch_norm)
 
     # ---- 数据库数据集：多季节合并（test=False），顺序 = [季节0 全部地点, 季节1 ...] ----
+    # skip_db：数据库侧的 skip（会议口径下训练 skip=0、查询 skip=4800，两者不同）
+    skip_db = cfg.get("skip_db", cfg["skip"])
     db_csvs = [os.path.join('./vprtempo/dataset', f'{cfg["dataset"]}-{d}.csv')
                for d in cfg["database_dirs"].split(',')]
     db_dataset = CustomImageDataset(
         annotations_file=db_csvs, base_dir=cfg["data_dir"],
         img_dirs=cfg["database_dirs"].split(','), transform=transform,
-        filter=cfg["filter"], skip=cfg["skip"], test=False,
+        filter=cfg["filter"], skip=skip_db, test=False,
         max_samples=cfg["database_places"])
     n_seasons = len(db_csvs)
 

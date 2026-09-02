@@ -81,8 +81,10 @@ def load_config(config_path: str, seed: int) -> dict:
 def make_namespace(cfg: dict, train: bool) -> argparse.Namespace:
     ns = argparse.Namespace(**cfg)
     ns.train_new_model = train
-    # 唯一模型名：<exp_id>__seed<n>，规避 check_pretrained_model 的交互式询问
-    ns.model_name = f"{cfg['exp_id']}__seed{cfg['seed']}.pth"
+    # 模型名：配置显式给出（train/eval 分离口径，如会议 3300 地）时尊重配置；
+    # 否则用唯一名 <exp_id>__seed<n>，规避 check_pretrained_model 的交互式询问
+    if not cfg.get("model_name"):
+        ns.model_name = f"{cfg['exp_id']}__seed{cfg['seed']}.pth"
     return ns
 
 
