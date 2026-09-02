@@ -2,7 +2,7 @@
   "exp_id": "b0_pn_off",
   "seed": 2,
   "phase": "eval",
-  "wall_time_s": 2.26,
+  "wall_time_s": 2.27,
   "device": "CPU",
   "config": {
     "dataset": "nordland",
@@ -37,5 +37,6 @@
     "20": 1.0,
     "25": 1.0
   },
-  "recallAt100precision": 0.22129436325678498
+  "recallAt100precision": 0.22129436325678498,
+  "precisionAt100recall": 0.9657258064516129
 }

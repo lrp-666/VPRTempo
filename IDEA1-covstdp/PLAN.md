@@ -323,7 +323,7 @@ layer.w.weight.data += layer.eta_stdp * dK
 
 **指标决策（全文统一，提前拍板）**：
 - **主指标 Recall@1/5/10/25**（`recallAtK`）——与 VPRTempo 原论文口径一致，外部可比；
-- **互补主指标 recall@100%precision + PR 曲线**（`metrics.py` 的 `recallAt100precision` / `createPR` 现成，`--PR_curve` 开关已有）——threshold-free，衡量相似度矩阵本身的可分性；R@1 只看 top-1 猜没猜对，在 3-seed 小样本和轨 B（cosine 检索）上，R@100%P 往往比 R@1 更能区分两个 encoder 的差距；
+- **互补主指标 recall@100%precision + precision@100%recall + PR 曲线**（`metrics.py` 的 `recallAt100precision` / `createPR` 现成）——threshold-free，衡量相似度矩阵本身的可分性。两个方向都要：R@100%P 衡量零误报下的找回能力；**P@100%R 是 LoCS-Net 的口径**（其 Nordland 78.6% 即此指标），采用它可直接与最强外部对手比数字。R@1 只看 top-1 猜没猜对，且实测对规模钝化（500→1000 地 R@1 只掉 3 点，R@100%P 从 0.587 塌到 0.180）；
 - 不再堆其他性能指标（AUC/F1 在 VPR 社区不流行）；效率指标归 Table 4，核分析指标（Gabor R² 等）是机制证据，三者分工清晰。
 
 **详细操作**：

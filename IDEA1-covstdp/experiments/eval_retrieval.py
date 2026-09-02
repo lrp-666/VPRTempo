@@ -150,10 +150,12 @@ def main():
     Ks = [1, 5, 10, 15, 20, 25]
     recalls = {k: round(recallAtK(S, GT, K=k), 4) for k in Ks}
     P, R = createPR(S, GT, matching='single', n_thresh=100)
-    r100 = float(np.max(np.array(R)[np.array(P) == 1.0])) if any(p == 1.0 for p in P) else 0.0
+    P_arr, R_arr = np.array(P), np.array(R)
+    r100 = float(np.max(R_arr[P_arr == 1.0])) if np.any(P_arr == 1.0) else 0.0
+    p100 = float(np.max(P_arr[R_arr >= 1.0 - 1e-9])) if np.any(R_arr >= 1.0 - 1e-9) else 0.0
 
     print(f"[eval_retrieval] Recall@K = {recalls}")
-    print(f"[eval_retrieval] R@100%P = {r100:.4f}")
+    print(f"[eval_retrieval] R@100%P = {r100:.4f} | P@100%R = {p100:.4f}")
 
     # ---- 落盘 ----
     out_dir = RESULTS_DIR / cfg["exp_id"] / f"seed_{cli.seed}"
@@ -168,6 +170,7 @@ def main():
         "wall_time_s": round(wall, 2), "device": model.device,
         "config": cfg,
         "recallAtK": recalls, "recallAt100precision": round(r100, 4),
+        "precisionAt100recall": round(p100, 4),
     }
     out_file = out_dir / f"{cfg['exp_id']}__seed{cli.seed}__trackB.json"
     with open(out_file, "w") as f:

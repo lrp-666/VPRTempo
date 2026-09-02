@@ -120,14 +120,17 @@ def collect_results(exp_id: str, seed: int, phase: str, wall_s: float,
             dev = re.search(r"Current device is:\s*(\w+)", text)
             if dev:
                 result["device"] = dev.group(1)
-        # PR 曲线数据 → R@100%P
+        # PR 曲线数据 → R@100%P 与 P@100%R（LoCS-Net 口径）
         pr_file = latest / "PR_curve_data.json"
         if pr_file.exists():
             with open(pr_file) as f:
                 pr = json.load(f)
             r100 = max((r for p, r in zip(pr["Precision"], pr["Recall"]) if p == 1.0),
                        default=0.0)
+            p100 = max((p for p, r in zip(pr["Precision"], pr["Recall"]) if r >= 1.0 - 1e-9),
+                       default=0.0)
             result["recallAt100precision"] = r100
+            result["precisionAt100recall"] = p100
         # 原始日志一并归档
         if logfile.exists():
             shutil.copy(logfile, out_dir / f"logfile_{phase}.log")

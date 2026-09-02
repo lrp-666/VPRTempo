@@ -43,5 +43,6 @@
     "20": 0.8944,
     "25": 0.9007
   },
-  "recallAt100precision": 0.0737
+  "recallAt100precision": 0.0737,
+  "precisionAt100recall": 0.7192
 }
