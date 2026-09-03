@@ -118,7 +118,7 @@ B1 vs B2 是 Gate 1 的关键对比：**两者用同一随机初始化、同一�
 | R3 | R2 + local WTA | + 竞争稀疏 | 竞争机制值多少？ |
 | R4 | R3 + ITP | + 阈值可塑性 | 通道分化值多少？（**= B2 主组合**：STDP + local WTA + ITP 全开） |
 
-**配置钉死**：主表里的 B2 ≡ R4 全配置（C=32, k=5, conv_epoch=2, WTA=local(4×4), agg=mean, pre_mode=centered, **ITP=on, E/I=on, homeostasis=off**）；R2/R3 是阶梯专用独立配置名，不与 B2 混用，避免阶梯表与主表对不上。
+**配置钉死**：主表里的 B2 ≡ R4 全配置（C=32, k=5, conv_epoch=2, WTA=local(2×2)（v4 修订，ADR-1）, agg=mean, pre_mode=centered, **ITP=on, E/I=on（ON/OFF 通路）, homeostasis=off**）；R2/R3 是阶梯专用独立配置名，不与 B2 混用，避免阶梯表与主表对不上。
 
 每升一阶，双轨各报一次 Recall@K，**边际增益必须为正或至少有解释**（为负也要诚实报，那是分析素材）。这张表同时就是消融逻辑——区别只在于叙事顺序：消融是"从全配置往下拆"，阶梯是"从基线往上搭"。论文用阶梯叙事，附录用消融矩阵。
 
@@ -135,19 +135,25 @@ B1 vs B2 是 Gate 1 的关键对比：**两者用同一随机初始化、同一�
 RGB图 → ProcessImage(灰度→gamma→resize→PatchNorm→uint8→spike编码)
       → 展平 [1, 784] → feature_layer(784→1568) → output_layer(→500)
 
-【B2/B3 改动后】（维度数字以 28×28 输入、C=32, k=5, local WTA 4×4 主组合为例，依据 ADR-1）
+【B2/B3 改动后】（维度数字以 28×28 输入、C=32, k=5, local WTA 2×2 主组合为例，依据 ADR-1）
 RGB图 → ProcessImage(同上) → 展平 [1, 784]
       → 【新增】reshape 回 [1,1,28,28]
-      → conv_layer_1: Conv2d(1→C1, k×k) + 阈值 + WTA + STDP/ITP   ← 无监督训练后冻结
+      → conv_layer_1: Conv2d(1→C1, k×k) + 阈值 + ON/OFF 通路 + WTA + STDP/ITP   ← 无监督训练后冻结
       → (B3: conv_layer_2: Conv2d(C1→C2, k×k), 同上)
-      → 【ADR-1 强制】空间下采样：local WTA 的块 winner 图即 4×4 max-pool → [1,C,6,6]
-      → flatten [1, 1152]
-      → feature_layer(1152 → 2304) → output_layer(→500)
+      → 【ADR-1 强制】空间下采样：local WTA 的块 winner 图即 2×2 max-pool → [1,C,12,12]
+      → flatten [1, 4608]
+      → feature_layer(4608 → 9216) → output_layer(→500)
 ```
 
 > **输入尺寸拍板：主实验统一 28×28 + patches=7**（VPRTempo 论文/会议任务配置，非代码默认的 56×56）。
 > 理由：①与会议规模（3300 地）配置一致，500→3300 扩展只差模块数，故事干净；②更小输入 = 更快迭代。
 > 56×56 留一组对照（附录），说明结论对分辨率不敏感。
+>
+> **池化粒度拍板（v4，数据驱动）**：主组合 `wta_block` 从 4 改为 **2**。依据：阶段 2 变体扫描
+> （results/s25_variant_sweep.md）发现池化粒度是唯一大杠杆——block2 轨 B 0.894 vs block4 0.772（500 地），
+> 且只有 block2 在 3300 地让轨 A 转正（0.65 vs B0 0.59，results/s25_block2_gpu_scales.md）。
+> 代价：flatten 维度 1152→4608，feature_layer 参数 2.65M→42.5M（35× B0，效率表如实报告）；
+> GPU 上成本可接受（500 地训练 127.5s）。block∈{2,3,4} 进 S3.3 消融轴。
 
 ### 1.2 架构决策记录（ADR）—— 动工前必须拍板的三件事
 
@@ -161,8 +167,9 @@ RGB图 → ProcessImage(同上) → 展平 [1, 784]
 
 | 方案 | conv 输出 flatten | feature_layer 权重（dense fp32） | 可行性 |
 |---|---|---|---|
-| 不下采样，直接 flatten | 32×24×24 = 18,432 | 18,432 × 36,864 ≈ 6.8×10⁸ 参数 ≈ **2.7 GB** | ❌ 不采用：存储在 24 GB 卡上勉强能跑，真正的否决理由是**参数量 ~30× 于 B0（1.2M），可比性破产** + `calc_stdp` 每样本 tile 同尺寸矩阵极慢 |
-| 4×4 空间下采样后 flatten | 32×6×6 = **1,152** | 1,152 × 2,304 ≈ 2.65×10⁶ ≈ 10.6 MB | ✅ 与 B0（784×1568=1.2M）同量级 |
+| 不下采样，直接 flatten | 32×24×24 = 18,432 | 18,432 × 36,864 ≈ 6.8×10⁸ 参数 ≈ **2.7 GB** | ❌ 不采用：存储在 24 GB 卡上勉强能跑，真正的否决理由是**参数量 ~560× 于 B0（1.2M），可比性破产** + `calc_stdp` 每样本 tile 同尺寸矩阵极慢 |
+| 4×4 下采样（block4）后 flatten | 32×6×6 = 1,152 | 1,152 × 2,304 ≈ 2.65×10⁶ ≈ 10.6 MB | ⚠️ 曾是主组合；实测空间信息损失过大（轨 B 0.772，远低于 B0 的 0.948）——降为消融格 |
+| **2×2 下采样（block2）后 flatten** | 32×12×12 = **4,608** | 4,608 × 9,216 ≈ 4.25×10⁷ ≈ 170 MB | ✅ **新主组合（v4）**：性能大杠杆；参数量 35× B0 须在效率表如实报告 |
 
 （56×56 对照组：输入像素是 4 倍，但 feature_layer 参数量约 22 倍——不下采样 60 GB 完全不可行，下采样后 234 MB 勉强可行——进一步支持主实验用 28×28。）
 
@@ -176,17 +183,17 @@ RGB图 → ProcessImage(同上) → 展平 [1, 784]
 | (b) 独立 max-pool 层 | conv → clamp → 4×4 max-pool | 多一个模块，但与 WTA 解耦，WTA=none 时也必须用它 |
 | (c) **复用 local WTA 的块结构** | local WTA(4×4) 本来就是"每块取 winner"——块 winner 值拼起来就是一张 4×4 max-pooled 图 | ✅ 零额外计算，WTA 与池化同一操作，叙事优雅："竞争即池化" |
 
-**拍板**：主组合用 **(c)**——local WTA(4×4) 的 winner 值重排为 [1,C,6,6] 后 flatten（1,152 维）送 feature_layer；WTA=none 的消融格子用 **(b)** 独立 4×4 max-pool 补足同一维度链（保证消融只变 WTA 一个变量）；WTA=(a) stride 不采用。
+**拍板**：主组合用 **(c)**——local WTA 的 winner 值重排后 flatten 送 feature_layer；WTA=none 的消融格子用 **(b)** 独立 max-pool 补足同一维度链（保证消融只变 WTA 一个变量）；WTA=(a) stride 不采用。**块边长从 4 修订为 2**（v4，数据驱动：block4 空间信息损失过大、block2 是变体扫描中唯一大杠杆且让 3300 地轨 A 转正；block3 未测，进消融轴）。
 
-**WTA 模式与下游维度的耦合（必须写进论文设计说明）**：
+**WTA 模式与下游维度的耦合（必须写进论文设计说明；维度按 block2 主组合）**：
 
 | WTA 模式 | 送 feature_layer 的张量 | 维度 | 风险 |
 |---|---|---|---|
 | global | 每通道 1 个 winner 值 → [C] 向量 | 32 | ⚠️ 信息瓶颈：整张图压成 32 个数，大概率掉点；若 global 在消融中意外胜出，需加 C 或改池化后再进主表 |
-| local(4×4) | 块 winner 图 [C,6,6] flatten | 1,152 | 主组合，与 B0（784）同量级 |
-| none | 全图 4×4 max-pool 后 flatten | 1,152 | 与 local 同维度，隔离 WTA 变量 |
+| local(2×2) | 块 winner 图 [C,12,12] flatten | 4,608 | 主组合（v4） |
+| none | 全图 2×2 max-pool 后 flatten | 4,608 | 与 local 同维度，隔离 WTA 变量 |
 
-**feature = 2×input 规则保留**（VPRTempoTrain.py:162）：下采样后 input=1,152 → feature=2,304，保持与 B0 相同的层宽比，可比性优先。
+**feature = 2×input 规则保留**（VPRTempoTrain.py:162）：下采样后 input=4,608 → feature=9,216，保持与 B0 相同的层宽比。
 
 ---
 
@@ -225,7 +232,7 @@ RGB图 → ProcessImage(同上) → 展平 [1, 784]
 | 4 | ITP Δθ=η(Θ(x)−f)（:597-606） | **移植**：每神经元 → 每通道 | S2.4 |
 | 5 | Homeostasis 抑制稳态缩放（:608+，公式 4） | **默认关，留消融开关** | blitnet 需要它是因为全连接版**没有 WTA**、无发放上限控制；卷积版已有三重稳定机制（WTA 稀疏 + 每核保范数归一化 + ITP），先验证无 homeostasis 是否稳定，不稳定再开 |
 
-**向量化是硬性实现要求**：local WTA(4×4) 下每张图 winner 数 = C×(H'/4)×(W'/4) = 32×36 = **1,152 个**；Python 逐 winner 循环 × 1,000 图 × 2 epoch ≈ 230 万次迭代，不可行。
+**向量化是硬性实现要求**：local WTA(2×2) 下每张图 winner 数 = C×(H'/2)×(W'/2) = 32×144 = **4,608 个**；Python 逐 winner 循环 × 1,000 图 × 2 epoch ≈ 920 万次迭代，不可行。
 
 *更进一步的观察*：把 (0.5−post) 写回 winner 位置、其余置零得到响应图 M，则每通道更新量 `ΔK_c = Σ_winners (0.5−post)·patch` **正是 pre_img 与 M 的互相关——即卷积层权重梯度的定义**。因此整个更新一行解决，走 cuDNN，无索引体操：
 
@@ -240,7 +247,7 @@ layer.w.weight.data += layer.eta_stdp * dK
 
 注意 `pre_mode='centered'` 时传入 `pre_img - 0.5` 即可，公式形式不变。Python 循环版仍保留在玩具测试里做逐元素对拍（两版输出必须一致），但正式训练只走 `conv2d_weight` 路径——这省掉 unfold/gather/index_add 方案里的大部分调试时间。
 
-**内存对比（卖点素材，写给实验 1.5）**：全连接版每样本 tile 出 [in,out] = [1152, 2304] 全矩阵做更新；卷积版每样本只动 N_win×k² = 1152×25 个元素——**单样本更新量差 input 维度数量级**，这是"卷积 STDP 比全连接 STDP 便宜"的量化论据。
+**内存对比（卖点素材，写给实验 1.5）**：全连接版每样本 tile 出 [in,out] = [4608, 9216] 全矩阵做更新；卷积版每样本只动 N_win×k² = 4608×25 个元素——**单样本更新量差 input 维度数量级**，这是"卷积 STDP 比全连接 STDP 便宜"的量化论据。
 
 ---
 
@@ -328,7 +335,7 @@ layer.w.weight.data += layer.eta_stdp * dK
 
 **详细操作**：
 1. 新文件 `IDEA1-covstdp/experiments/eval_retrieval.py`，结构镜像 `run_inference`（VPRTempo.py:669）：建数据集 → 加载模型 → 遍历前向。差别在最后一步。
-2. **特征提取点**（每个变体一个指定层，写进配置；**统一取池化后 flatten 的 1,152 维向量**——即 feature_layer 实际看到的那个向量，不是池化前的 18,432 维大图）：
+2. **特征提取点**（每个变体一个指定层，写进配置；**统一取池化后 flatten 向量（主组合 4,608 维）**——即 feature_layer 实际看到的那个向量，不是池化前的 18,432 维大图）：
    - B0：feature_layer 输出（clamp 后）。
    - B1/B2/B3/B5：conv 前端最后一层**池化后**输出 → flatten。**同时**记录 feature_layer 输出作为第二个特征点（附录分析用）。
    - B4：CNN backbone 输出（同样取送分类头前的 flatten 向量）。
@@ -386,9 +393,9 @@ layer.w.weight.data += layer.eta_stdp * dK
 **背景与动机**：为什么需要 WTA？若没有竞争，feature map 上所有位置都发放、都触发 STDP，核会被所有位置的 patch 平均成"全局均值模板"，学不出选择性。WTA 制造稀疏发放（呼应 BLiTNet 稀疏哲学），保证每次更新只来自最有信心的位置。做三个变体是因为"全局唯一 winner 太稀疏 vs 局部 winner 密度适中"孰优无法先验判断——这是 Table 2 的消融轴。
 
 **详细操作**：
-1. 参数 `wta_mode ∈ {'global','local','none'}`，`wta_block=4`。
+1. 参数 `wta_mode ∈ {'global','local','none'}`，`wta_block`（主组合 = 2；4 为消融格，ADR-1 v4 修订）。
 2. **global**：每通道 argmax，仅该位置保留原值，其余置零（flat argmax → scatter 成 mask → `z * mask`）。
-3. **local**：不重叠 4×4 块，每块一个 winner。实现用 reshape/unfold 分块 → 块内 argmax → 置零其余 → 拼回。H',W' 不被 4 整除时**裁掉右/下余数边缘**（简单、无 padding 伪影，论文注明）。主配置 28 输入 k=5 → H'=24，24/4=6 整除，无此问题（56 对照 k=5 → 52/4=13 同样整除；仅 k=3 等组合需要裁边）。
+3. **local**：不重叠 b×b 块（b=`wta_block`），每块一个 winner。实现用 reshape/unfold 分块 → 块内 argmax → 置零其余 → 拼回。H',W' 不被 b 整除时**裁掉右/下余数边缘**（简单、无 padding 伪影，论文注明）。主配置 28 输入 k=5 → H'=24，24/2=12 整除（block4 时 24/4=6 也整除）；仅 k=3（H'=26）等组合需要裁边。
 4. **none**：不置零（对照组）。此模式下 STDP 更新用**稠密 M = (0.5−post) 全图**（`conv2d_weight` 公式不变，M 不置零即可，ADR-3）——这也是阶梯 R2 与 Table 2 none 格的实现方式，**同一配置跑一次两处引用**。
 5. winner 的 (通道, y, x) 坐标列表要返回/缓存，供 S2.3 patch 提取。
 6. mask 作用于 clamp 后的活动，保证下游 feature_layer 看到的也是稀疏表征（否则 WTA 只影响学习不影响表征，实验逻辑不干净）。
@@ -452,7 +459,7 @@ pre_term = (pre_patch - 0.5) if pre_mode == 'centered' else \
    layer.thr.data += layer.eta_ip * (observed - layer.fire_rate)
    layer.thr.data.clamp_(min=0)   # 对齐 blitnet.py:606
    ```
-   **为什么不能在 WTA 后统计**：local WTA 下每通道恒有 (H'/4)×(W'/4) = 36 个 winner，post-WTA 图上每通道发放率被结构钉死为常数 36/576 ≈ 6.25%——`observed − f` 对所有通道同号同值，ITP 的差异化调节完全失效。global WTA 同理（恒 1 个 winner）。
+   **为什么不能在 WTA 后统计**：local WTA 下每通道恒有 (H'/b)×(W'/b) 个 winner（block2 主组合 = 12×12 = 144 个），post-WTA 图上每通道发放率被结构钉死为常数 144/576 = 25%——`observed − f` 对所有通道同号同值，ITP 的差异化调节完全失效。global WTA 同理（恒 1 个 winner）。
 3. 死通道监控（信号必须换）：local WTA 下 winner 计数被结构钉死，"0-winner 报警"永远不会触发。改用两个有效信号——**每通道 winner 平均幅度 ≈ 0**（块内全零时 argmax 选出的也是 0）+ **pre-WTA 发放率长期贴 0**。任一触发即报警（ITP 失效信号，调 η_ITP 或 f 范围）。
 
 **验收**：训练后各通道 **pre-WTA** 经验发放率与目标 f 的秩相关显著为正；无 winner 均幅 ≈ 0 的死通道。
@@ -463,7 +470,7 @@ pre_term = (pre_patch - 0.5) if pre_mode == 'centered' else \
 
 **详细操作**：
 1. `VPRTempoTrain.__init__` 加分支：`args.frontend == 'conv_stdp'` 时，在 add feature_layer **之前** add conv 层（layer_dict 顺序 0,1,2 → 自动先训 conv）。
-2. **维度重算（照 ADR-1）**：`self.input = C × (H'/pool) × (W'/pool)`（主组合 = 32×6×6 = 1,152），由 dims/k/C/pool 参数在 `__init__` 算出，硬编码零容忍；feature_layer dims 随之改（VPRTempoTrain.py:161-162），feature = 2×input 规则保留。`--dims` 语义不变（仍是图像尺寸）。
+2. **维度重算（照 ADR-1）**：`self.input = C × (H'/b) × (W'/b)`（主组合 = 32×12×12 = 4,608），由 dims/k/C/wta_block 参数在 `__init__` 算出，硬编码零容忍；feature_layer dims 随之改（VPRTempoTrain.py:161-162），feature = 2×input 规则保留。`--dims` 语义不变（仍是图像尺寸）。
 3. **框架改动范围（照 ADR-2，共 3 处小分支，原路径一行不改）**：
    - `train_new_model` 层循环（VPRTempoTrain.py:674）：`isinstance(layer, ConvSNNLayer)` → 调 `train_conv_layer`；
    - `train_model` 的 prev_layers 冻结前向（VPRTempoTrain.py:429-434）：conv 层走 conv 前向路径（reshape→conv→减thr→clamp→WTA→池化→flatten）；
@@ -494,10 +501,10 @@ pre_term = (pre_patch - 0.5) if pre_mode == 'centered' else \
 ```
 conv1（k=5, padding=2）：28 → 28（保持分辨率；STDP 的 conv2d_weight 调用须传相同 padding 保持对齐）
 conv2（k=5, 无 padding）：28 → 24
-4×4 池化（local WTA 块 winner 图）：24/4 = 6 → flatten = C2×6×6 = 32×36 = 1,152 ✓ 与 B2 严格同维
+2×2 池化（local WTA 块 winner 图）：24/2 = 12 → flatten = C2×12×12 = 32×144 = 4,608 ✓ 与 B2 严格同维
 ```
 
-注意：两层都不 padding 的话是 28→24→20，池化后 5×5=25×C2=800 ≠ 1152，B2/B3 下游维度就不可比了——**conv1 的 padding=2 是同维的关键**，不是可选项。**禁止先写代码后算维度**——feature_layer 参数量随 flatten 维度平方增长（ADR-1 的账）。类型分发天然支持多层（按 layer_dict 顺序各训各的）。
+注意：两层都不 padding 的话是 28→24→20，池化后 10×10=100×C2=3,200 ≠ 4,608，B2/B3 下游维度就不可比了——**conv1 的 padding=2 是同维的关键**，不是可选项。**禁止先写代码后算维度**——feature_layer 参数量随 flatten 维度平方增长（ADR-1 的账）。类型分发天然支持多层（按 layer_dict 顺序各训各的）。
 
 **验收**：双层训练完成、维度链正确；轨 B 数字可进主表。
 
@@ -546,7 +553,7 @@ conv2（k=5, 无 padding）：28 → 24
 ### S3.2 实验 1.1：主表（Table 1）
 
 **详细操作**：
-1. 矩阵：B0–B5 × 3 seeds × 双轨 × PatchNorm=on（off 归实验 1.4）。**B2 主组合钉死（= 阶梯 R4）**：C=32, k=5, conv_epoch=2, WTA=local(4×4), agg=mean, pre_mode=centered, **ITP=on, E/I=on, homeostasis=off**。B5（Gabor 滤波器组）无需训练，3 seeds 只影响下游 feature/output 层初始化。
+1. 矩阵：B0–B5 × 3 seeds × 双轨 × PatchNorm=on（off 归实验 1.4）× **双规模（500 地迭代用 + 3300 地会议规模判定用）**。双规模是阶段 1 规模探索的硬结论：500 地 encoder 天花板太近（轨 B 已 0.948）会出假阴性，正式判定必须在 3300 地（results/scale_check.md）。**B2 主组合钉死（= 阶梯 R4）**：C=32, k=5, conv_epoch=2, WTA=local(2×2), agg=mean, pre_mode=centered, **ITP=on, E/I=on（ON/OFF 通路）, homeostasis=off**。B5（Gabor 滤波器组）无需训练，3 seeds 只影响下游 feature/output 层初始化。
 2. 指标：Recall@1/5/10/25 为主 + recall@100%precision 互补（指标决策见 S1.4），PR 曲线图进正文。
 3. 执行：run_exp.py 批量 → `experiments/make_table1.py` 汇总 mean±std。
 4. 统计判据（提前承诺）：B2−B1（轨B）、B2−B0（轨A）报差值 ± 联合 std；3 seed 太少不做强显著性声明，以效应量为主，措辞谨慎。
@@ -557,7 +564,7 @@ conv2（k=5, 无 padding）：28 → 24
 ### S3.3 实验 1.3 / 1.4：消融
 
 **详细操作**：
-1. **Table 2（WTA × 聚合）**：{global, local, none} × {mean, sum}，固定 C=32/k=5/B2，双轨。意义：WTA 稀疏度控制 STDP 样本效率，聚合方式控制更新尺度——两者都可能"差到不可用"，必须扫。
+1. **Table 2（WTA × 聚合 × 池化粒度）**：{global, local, none} × {mean, sum}，固定 C=32/k=5/B2，双轨；**另加 `wta_block ∈ {2,3,4}` 轴**（v4 新增：变体扫描显示池化粒度是唯一大杠杆，block3 未测，必须补上以支撑主组合 block2 的选择）。意义：WTA 稀疏度控制 STDP 样本效率，聚合方式控制更新尺度，块大小控制空间信息保留——三者都可能"差到不可用"，必须扫。
 2. **C × k 主组合**：{16,32,64} × {3,5,7} 选 6–9 组（对角线选法：16/3, 32/3, 32/5, 32/7, 64/5, 64/7），轨 B 优先（便宜），代表组合补轨 A。
    **最优 k 的预先承诺选择程序（防止事后挑数）**：
    - 固定 C=32、其余默认，先在**轨 B** 上扫 k∈{3,5,7}，按 3-seed 平均 Recall@K 选主组合；
@@ -569,7 +576,7 @@ conv2（k=5, 无 padding）：28 → 24
 4. **Table 3b（直流塌缩的直接证据格）**：B2 限定，patch_norm {on,off} × pre_mode {centered,amp} 2×2，双轨。修正后的预期（依据 S1.2 实测直方图）：amp 在 on/off 下都应明显差于 centered（off 模式实测无近零暗背景，两种模式输入都处处 ≥0）；on/off 差异更多体现 patch 内容结构差异。这是 S2.3 设计决策的量化验证，也是审稿人问"为什么 centered"时的数据答案。
 5. **conv epoch ∈ {1,2,4}**（附录）：验证 STDP 收敛与过拟合（无监督也会过拟合：核塌缩 / winner 垄断）。
 6. **E/I 通道拆分消融**（Table 2 附属行，一个开关）：{ON/OFF 双通路（默认） vs 全兴奋核}，固定 B2 主组合，双轨。背景：fork B 已证明朴素的"权重符号 E/I"在卷积域退化为死通道（发放率精确 0），修订为 ON/OFF 双通路后抑制通道成为 OFF 检测器（反相对比模式检测）。本消融回答：OFF 通路对表征的贡献有多大？两种结果都可写：全兴奋 ≈ ON/OFF → 单极性模式空间已够用（PatchNorm 输出近似对称分布时可能出现）；ON/OFF 明显更好 → 带符号模式空间是必要的，且无需带符号权重即可实现（叙事素材）。
-6. **编码探索（附录，可选）**：主实验一律用原始单步幅度编码（`SetImageAsSpikes`，像素/255），理由：①B0–B3 可比性，唯一变量是 conv 前端；②换多步编码（发放率/时延）会摧毁"无多步仿真"卖点——那是 SpikingJelly 参照行（S3.5）的领地。可选探索：**ON/OFF 双通道编码**（签名信号拆正/负两通道，类 DoG 中心-外周），与 conv-STDP 预期的中心-外周核结构天然契合；做则只跑 B2 主配置轨 B，作为附录一小节。注意它会改变输入通道数（1→2），不进主表。
+7. **编码探索（附录，可选）**：主实验一律用原始单步幅度编码（`SetImageAsSpikes`，像素/255），理由：①B0–B3 可比性，唯一变量是 conv 前端；②换多步编码（发放率/时延）会摧毁"无多步仿真"卖点——那是 SpikingJelly 参照行（S3.5）的领地。可选探索：**ON/OFF 双通道编码**（签名信号拆正/负两通道，类 DoG 中心-外周），与 conv-STDP 预期的中心-外周核结构天然契合；做则只跑 B2 主配置轨 B，作为附录一小节。注意它会改变输入通道数（1→2），不进主表。
 
 **验收**：三张表齐全，每张至少一段可直接写进论文的观察。
 
@@ -601,7 +608,9 @@ conv2（k=5, 无 padding）：28 → 24
 | Gate 0（阶段1出口） | B0 与第 -1b 步种子化 main 参照一致（±2 点）且 feat 默认参数逐比特回归通过 | 基础设施可信 | 不进阶段 2，先排查 |
 | Gate 1 | 轨B：B2 > B1，差值 > 3-seed 联合 std | 可塑性学到结构（核可视化佐证） | 回查 S2.3/S2.4（先查直流防线断言 4/5）；仍不过则整个 idea 重估 |
 | Gate 1.5 | 轨B：B2 ≥ B5（Gabor 手工组）− 1×std | 学习达到/超越手工滤波器 | B2 明显 < B5 → 规则没学到结构，回查 pre_mode 与 WTA；若 B5 反而最强，故事改为"手工前端 + SNN 读出"并弱化学习叙事 |
-| Gate 2 | 轨A：B2 或 B3 > B0 | 空间归纳偏置帮助完整系统 | **退路启动**：改分析型故事 |
+| Gate 2 | 轨A：B2 或 B3 > B0（**判定在 3300 地会议规模**，3 seeds） | 空间归纳偏置帮助完整系统 | **退路启动**：改分析型故事 |
+
+> **Gate 预演状态（单 seed，非正式判定）**：Gate 1 预演三规模全正（B2−B1 = +3.6/+5.6/+4.6 点，results/s25_b2_vs_b1_preview.md）；Gate 2 预演在 3300 地转正（block2：B2 轨 A 0.65 > B0 0.59，results/s25_block2_gpu_scales.md）。正式判定仍以 3-seed 主表为准——单 seed 趋势不能进论文。当前数据支持的主叙事：**"conv 前端的价值随规模增长"**（小规模读出无压力时压缩代价占主导；3300 地 spike-forcing 读出成为瓶颈，结构化特征胜出）。
 
 **退路剧本（Gate 1 过、Gate 2 不过）**：故事改为分析型——"无 BP 卷积可塑性学到何种特征、为何与 spike-forcing 读出失配"。轨 B 正结果 + 核可视化 + PatchNorm 交互分析仍完整成立，失配本身是贡献（顺势引出创新点 2"读出适配"）。投稿目标从 ICRA/RA-L 转向 Frontiers/期刊。
 
@@ -631,13 +640,15 @@ conv2（k=5, 无 padding）：28 → 24
 3. 每个卡片完成后：更新本文件清单勾选 + `results/` 落盘 + 提交到功能分支，**不直接合 main**（main 只收阶段级合并）。
 4. 分支命名：`feat/convstdp-s<编号>-<短名>`，如 `feat/convstdp-s21-conv-forward`。
 5. 所有实验必须能由 `experiments/run_exp.py` + 配置复现，禁止"手工跑了一次"的孤儿结果进表。
+6. **算力规程（v4 新增）**：调参与正式实验默认走工作站 GPU（SSH 别名 `vpr-workspace`，操作细节与故障排查见本地 gitignored 文档 `IDEA1-covstdp/docs/workstation-handover.md`，**勿提交**——含内网地址）。关键纪律：非交互 SSH 每条命令前加 `export PATH=$HOME/.pixi/bin:$PATH`；长任务用 tmux；远程仓库分支保持与 origin 同步；GPU/CPU 结果一致性已验证（±1 点内，`results/s25_block2_gpu_scales.md`）。GitHub 网络抖动时用 `git -c http.lowSpeedLimit=1000 -c http.lowSpeedTime=30 push` 重试。
+7. `papers/idea1-convstdp/` 是写作会话的 untracked 目录，任何 fork 都不得 add 进提交。
 
 ### Fork 前一次性锁定的决策清单（改动需回到本文档修订并记录原因）
 
 | # | 事项 | 锁定值 |
 |---|---|---|
-| 1 | B2 主组合完整配置 | C=32, k=5, conv_epoch=2, WTA=local(4×4), agg=mean, pre_mode=centered, **ITP=on, E/I=on, homeostasis=off**（= 阶梯 R4，S3.2 已同步） |
-| 2 | 轨 B 特征点 | 池化后 flatten 的 1,152 维（feature_layer 实际看到的向量），全变体统一 |
+| 1 | B2 主组合完整配置 | C=32, k=5, conv_epoch=2, WTA=local(2×2)（v4 修订）, agg=mean, pre_mode=centered, **ITP=on, E/I=on（ON/OFF 通路）, homeostasis=off**（= 阶梯 R4，S3.2 已同步）；主实验双规模（500 迭代 + 3300 判定） |
+| 2 | 轨 B 特征点 | 池化后 flatten 向量（block2 主组合 = 4,608 维；feature_layer 实际看到的向量），全变体统一 |
 | 3 | Gate 0 判据 | 第 -1b 步种子化 main 参照 ±2 点 + feat 默认参数逐比特回归（论文 3300 地数字只作量级 sanity） |
 | 4 | 调参协议 | 轨 B 单 seed 粗调 → 锁定写入配置文件 → 3 seed 正式跑（防止隐式调参泄漏进主表） |
 | 5 | seed 细节 | 三件套 + `worker_init_fn`（num_workers>0 时）+ `PYTHONHASHSEED`（S1.3） |
