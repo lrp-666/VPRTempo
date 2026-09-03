@@ -225,7 +225,8 @@ def train_conv_layer(train_loader, layer, model, model_num=0):
     from tqdm import tqdm
 
     n_imgs = len(train_loader.dataset)
-    T = int(n_imgs * model.conv_epoch)          # 独立退火总步数（S2.5 卡片）
+    conv_epoch = int(getattr(model, 'conv_epoch', 2))   # 防御性默认（旧配置可能缺 conv 字段）
+    T = int(n_imgs * conv_epoch)          # 独立退火总步数（S2.5 卡片）
     pbar = tqdm(total=T, desc=f"Module {model_num + 1} conv_layer", position=0)
 
     # 保存初始学习率（对齐 train_model 的 detach 副本做法）
@@ -235,7 +236,7 @@ def train_conv_layer(train_loader, layer, model, model_num=0):
     pre_mode = getattr(model, 'pre_mode', 'centered')
     agg_mode = getattr(model, 'agg_mode', 'mean')
 
-    for _ in range(model.conv_epoch):
+    for _ in range(conv_epoch):
         for spikes, _ in train_loader:
             spikes = spikes.to(model.device)
             x = layer.reshape_input(spikes)              # [1,1,H,W]
