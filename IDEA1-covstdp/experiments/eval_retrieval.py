@@ -73,11 +73,12 @@ def build_inference_models(cfg):
     return models
 
 
-def extract_features(models, dataset, device):
+def extract_features(models, dataset, device, feature_point="auto"):
     """逐样本提取 encoder 特征：
-    - frontend='none'（B0）：feature_layer 线性输出 → clamp_spikes（减 thr + clamp [0,0.9]）
-    - conv 前端（B1/B2/B3/B5）：conv 池化后 flatten 的 1152 维（PLAN S1.4 钉死的特征点，
-      多模块共享同一前端权重，取 models[0] 即可）
+    - frontend='none'（B0）：feature_layer 线性输出 → clamp_spikes
+    - conv 前端 + feature_point='conv'（默认）：conv 池化后 flatten（1152 维）
+    - conv 前端 + feature_point='feature_layer'：conv → feature_layer → clamp
+      （与 B0 轨 B 同层级的公平对比点，回答"conv 前端给表征学习带来了什么"）
     """
     import vprtempo.src.blitnet as bn
     from vprtempo.src import conv_frontend as cf
@@ -90,9 +91,12 @@ def extract_features(models, dataset, device):
         for spikes, _ in loader:
             spikes = spikes.to(device)
             if use_conv:
-                feats.append(cf.conv_forward(models[0].conv_layer, spikes).cpu())
-                continue
-            # 阶段 1 为单模块；多模块时各模块特征拼接（与轨 A 输出拼接同构）
+                x = cf.conv_forward(models[0].conv_layer, spikes)
+                if feature_point == "conv":
+                    feats.append(x.cpu())
+                    continue
+                # feature_layer 特征点：conv 池化特征 → feature_layer → clamp
+                spikes = x
             per_module = []
             for model in models:
                 x = model.feature_layer.w(spikes)
@@ -142,8 +146,11 @@ def main():
         max_samples=cfg["query_places"])
 
     t0 = time.time()
-    F_db = extract_features(models, db_dataset, model.device)
-    F_q = extract_features(models, q_dataset, model.device)
+    feat_point = cfg.get("feature_point", "auto")   # 'auto'|'conv'|'feature_layer'
+    if feat_point == "auto":
+        feat_point = "conv" if cfg.get("frontend", "none") != "none" else "feature_layer"
+    F_db = extract_features(models, db_dataset, model.device, feature_point=feat_point)
+    F_q = extract_features(models, q_dataset, model.device, feature_point=feat_point)
     wall = time.time() - t0
 
     # ---- cosine 相似度矩阵 ----
@@ -172,8 +179,7 @@ def main():
     out_dir.mkdir(parents=True, exist_ok=True)
     result = {
         "exp_id": cfg["exp_id"], "seed": cli.seed, "phase": "trackB",
-        "feature_point": "feature_layer_clamped" if cfg.get("frontend", "none") == "none"
-                         else "conv_frontend_pooled",
+        "feature_point": feat_point,
         "feature_dim": int(F_db.shape[1]),
         "n_db_rows": int(S.shape[0]), "n_query": int(S.shape[1]),
         "n_seasons": n_seasons,
@@ -182,10 +188,10 @@ def main():
         "recallAtK": recalls, "recallAt100precision": round(r100, 4),
         "precisionAt100recall": round(p100, 4),
     }
-    out_file = out_dir / f"{cfg['exp_id']}__seed{cli.seed}__trackB.json"
+    out_file = out_dir / f"{cfg['exp_id']}__seed{cli.seed}__trackB_{feat_point}.json"
     with open(out_file, "w") as f:
         json.dump(result, f, indent=2, ensure_ascii=False)
-    np.save(out_dir / f"{cfg['exp_id']}__seed{cli.seed}__S_trackB.npy", S)
+    np.save(out_dir / f"{cfg['exp_id']}__seed{cli.seed}__S_trackB_{feat_point}.npy", S)
     print(f"[eval_retrieval] 结果已写入 {out_file}")
 
 

@@ -2,12 +2,12 @@
   "exp_id": "b0_3300",
   "seed": 0,
   "phase": "trackB",
-  "feature_point": "feature_layer_clamped",
-  "feature_dim": 4704,
+  "feature_point": "conv_frontend_pooled",
+  "feature_dim": 1152,
   "n_db_rows": 6600,
   "n_query": 2700,
   "n_seasons": 2,
-  "wall_time_s": 37.35,
+  "wall_time_s": 56.33,
   "device": "cpu",
   "config": {
     "dataset": "nordland",
@@ -25,7 +25,7 @@
     "dims": "28,28",
     "train_new_model": false,
     "quantize": false,
-    "model_name": "b0_3300__seed0.pth",
+    "model_name": "b2_3300__seed0.pth",
     "PR_curve": true,
     "sim_mat": false,
     "run_demo": false,
@@ -33,16 +33,23 @@
     "skip_db": 0,
     "seed": 0,
     "patch_norm": "on",
-    "frontend": "none"
+    "frontend": "conv_stdp",
+    "wta_mode": "local",
+    "wta_block": 4,
+    "agg_mode": "mean",
+    "pre_mode": "centered",
+    "conv_channels": 32,
+    "conv_kernel": 5,
+    "conv_epoch": 2
   },
   "recallAtK": {
-    "1": 0.7181,
-    "5": 0.8304,
-    "10": 0.8641,
-    "15": 0.8819,
-    "20": 0.8944,
-    "25": 0.9007
+    "1": 0.4978,
+    "5": 0.6711,
+    "10": 0.7281,
+    "15": 0.7581,
+    "20": 0.7826,
+    "25": 0.8
   },
-  "recallAt100precision": 0.0737,
-  "precisionAt100recall": 0.7192
+  "recallAt100precision": 0.0394,
+  "precisionAt100recall": 0.4983
 }
