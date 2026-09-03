@@ -69,6 +69,12 @@ def calc_stdp_conv(pre_img,   # [1, C_in, H, W] 输入 spike 图（已 reshape�
         8. 保范数 L1 归一化（仅本次有更新的通道，防止核幅度漂移）
     ================================================================================
     """
+    # frozen 层（B1 random_conv / B5 Gabor，S2.6/S2.9）：完全旁路权重更新——
+    # 含 Step 7 符号钳制与 Step 8 保范数归一化（负瓣保护：Gabor 核的负瓣一旦
+    # 经过 clamp(min=0) 即被摧毁，frozen 必须连这两条路径都不经过）。
+    if getattr(layer, 'frozen', False):
+        return
+
     with torch.no_grad():
         W = layer.w.weight.data
         C = W.shape[0]
@@ -134,6 +140,9 @@ def calc_stdp_conv(pre_img,   # [1, C_in, H, W] 输入 spike 图（已 reshape�
 # 仅用于玩具测试中的对拍（两版输出必须逐元素一致），验证向量化路径没有引入实现错误。
 # ================================================================================
 def calc_stdp_conv_reference(pre_img, out, layer, pre_mode='centered', agg_mode='mean'):
+    # frozen 守卫与正式版保持一致（见 calc_stdp_conv 头部注释）
+    if getattr(layer, 'frozen', False):
+        return
     with torch.no_grad():
         W = layer.w.weight.data.clone()
         C = W.shape[0]

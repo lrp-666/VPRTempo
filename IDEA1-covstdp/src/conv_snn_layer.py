@@ -81,10 +81,15 @@ class ConvSNNLayer(nn.Module):
                  wta_block=4,          # local WTA 的块边长（即池化倍率）
                  device=None,
                  inference=False,      # True 只保留 w/thr（对齐 blitnet.py:101-111）
+                 frozen=False,         # B1/B5 冻结前端（S2.6/S2.9）：跳过训练，且
+                                       # calc_stdp_conv 入口直接返回——符号钳制与
+                                       # 保范数归一化均不经过（负瓣保护，见
+                                       # conv_learning.py 的 frozen 守卫）
                  ):
         super(ConvSNNLayer, self).__init__()
         self.device = device
         self.inference = inference
+        self.frozen = frozen
         self.wta_mode = wta_mode
         self.wta_block = wta_block
         self.in_channels = in_channels

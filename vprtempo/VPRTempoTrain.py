@@ -771,11 +771,21 @@ def train_new_model(models, model_name):
             #   - i == 0：正常训练（train_conv_layer）
             #   - i > 0 ：多模块共享前端——直接拷贝 module 0 训好的权重（S2.5 卡片：
             #             "通用视觉特征"，省算力且保持模块间特征空间一致）
-            #   - frozen（B1 random_conv / B5 Gabor）：跳过训练，直接进已训练层列表
+            #   - frozen（B1 random_conv）：完全冻结，直接进已训练层列表（S2.6）
+            #   - frozen + itp_on_frozen（B5 Gabor，S2.9 修订）：权重冻结（STDP 被
+            #             calc_stdp_conv 入口的 frozen 守卫旁路，负瓣保护），但仍运行
+            #             train_conv_layer 让 ITP 适配阈值——带符号零均值核的响应量级
+            #             与非负随机核系统性不同，无 ITP 时 25/32 通道死亡；ITP 只调
+            #             阈值不触碰手工核，对比变量仍是核的来源
             # -----------------------------------------------------------------
             if cf.is_conv_layer(layer):
                 if getattr(layer, 'frozen', False):
-                    pass                                      # 冻结前端：不训练
+                    if getattr(layer, 'itp_on_frozen', False):
+                        if i == 0:
+                            cf.train_conv_layer(train_loader, layer, model, model_num=i)
+                        else:
+                            layer.load_state_dict(models[0].conv_layer.state_dict())
+                    # else：B1 完全冻结，不训练
                 elif i == 0:
                     cf.train_conv_layer(train_loader, layer, model, model_num=i)
                 else:

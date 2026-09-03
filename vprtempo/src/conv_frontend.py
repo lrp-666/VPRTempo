@@ -61,6 +61,10 @@ def _learn_mod():
     return _load("idea1_conv_learning", "IDEA1-covstdp/src/conv_learning.py")
 
 
+def _gabor_mod():
+    return _load("idea1_gabor_frontend", "IDEA1-covstdp/src/gabor_frontend.py")
+
+
 # ---- 类与函数的惰性代理（首次访问时才真正加载 IDEA1 模块）----
 def __getattr__(name):
     if name in ("ConvSNNLayer", "ConvFrontendModule"):
@@ -81,8 +85,13 @@ def build_conv_layer(model, dims, device, inference):
     """
     按配置构造 ConvSNNLayer。
     frontend='conv_stdp'    —— 正常训练；
-    frontend='random_conv'  —— B1 对照：结构相同但 frozen=True（S2.6，train_new_model 分发时跳过训练）。
+    frontend='random_conv'  —— B1 对照：结构相同但 frozen=True（S2.6，train_new_model 分发时跳过训练）；
+    frontend='gabor'        —— B5：载入手工 Gabor 组并 frozen=True（S2.9；frozen 同时旁路
+                              STDP 的符号钳制与保范数归一化，守卫在 calc_stdp_conv 入口）。
+    frozen 经构造参数传入（S2.9 起成为 ConvSNNLayer 的正式构造参数；对 random_conv
+    与原先"构造后赋值属性"完全等价——不涉及随机数消耗，B1/B2 初始化可比性不变）。
     """
+    frontend = getattr(model, 'frontend', 'none')
     ConvSNNLayer = _layer_mod().ConvSNNLayer
     layer = ConvSNNLayer(
         input_dims=dims,
@@ -97,9 +106,12 @@ def build_conv_layer(model, dims, device, inference):
         wta_block=int(getattr(model, 'wta_block', 4)),
         device=device,
         inference=inference,
+        frozen=frontend in ('random_conv', 'gabor'),
     )
-    if getattr(model, 'frontend', 'none') == 'random_conv':
-        layer.frozen = True
+    if frontend == 'gabor':
+        # 推理侧同样载入：值与 state_dict 中的保存值逐元素一致（Gabor 组全程确定性），
+        # load_model 加载后与训练侧无差异
+        _gabor_mod().load_gabor_weights(layer)
     return layer
 
 
