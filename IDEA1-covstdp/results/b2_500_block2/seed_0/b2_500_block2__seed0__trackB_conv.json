@@ -7,11 +7,11 @@
   "n_db_rows": 1000,
   "n_query": 500,
   "n_seasons": 2,
-  "wall_time_s": 5.55,
-  "device": "cpu",
+  "wall_time_s": 5.06,
+  "device": "cuda:0",
   "config": {
     "dataset": "nordland",
-    "data_dir": "/mnt/d/Data/datasets/vpr/Nordland",
+    "data_dir": "/home/ps/datasets/Nordland",
     "database_places": 500,
     "query_places": 500,
     "max_module": 500,
@@ -42,13 +42,13 @@
     "conv_epoch": 2
   },
   "recallAtK": {
-    "1": 0.894,
-    "5": 0.954,
-    "10": 0.968,
-    "15": 0.972,
+    "1": 0.878,
+    "5": 0.946,
+    "10": 0.964,
+    "15": 0.97,
     "20": 0.972,
-    "25": 0.978
+    "25": 0.976
   },
-  "recallAt100precision": 0.4407,
-  "precisionAt100recall": 0.903
+  "recallAt100precision": 0.4601,
+  "precisionAt100recall": 0.8851
 }

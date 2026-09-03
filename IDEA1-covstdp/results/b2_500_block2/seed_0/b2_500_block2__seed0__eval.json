@@ -2,11 +2,11 @@
   "exp_id": "b2_500_block2",
   "seed": 0,
   "phase": "eval",
-  "wall_time_s": 6.35,
-  "device": "CPU",
+  "wall_time_s": 7.95,
+  "device": "NVIDIA",
   "config": {
     "dataset": "nordland",
-    "data_dir": "/mnt/d/Data/datasets/vpr/Nordland",
+    "data_dir": "/home/ps/datasets/Nordland",
     "database_places": 500,
     "query_places": 500,
     "max_module": 500,
@@ -37,13 +37,13 @@
     "conv_epoch": 2
   },
   "recallAtK": {
-    "1": 0.83,
+    "1": 0.84,
     "5": 0.93,
-    "10": 0.97,
+    "10": 0.96,
     "15": 0.97,
     "20": 0.98,
     "25": 0.98
   },
-  "recallAt100precision": 0.09592326139088729,
-  "precisionAt100recall": 0.8356713426853707
+  "recallAt100precision": 0.07125890736342043,
+  "precisionAt100recall": 0.843687374749499
 }
