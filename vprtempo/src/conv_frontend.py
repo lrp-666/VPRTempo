@@ -106,6 +106,7 @@ def build_conv_layer(model, dims, device, inference):
 def conv_forward(layer, spikes_flat):
     """平向量 [1, H*W] → conv 前向 → pooled_flat（prev_layers 冻结前向 / 推理特征点用）"""
     import torch
+    spikes_flat = spikes_flat.to(layer.w.weight.device)  # 与层设备对齐（GPU/CPU 混用安全）
     with torch.no_grad():
         out = layer(layer.reshape_input(spikes_flat))
     return out.pooled_flat
