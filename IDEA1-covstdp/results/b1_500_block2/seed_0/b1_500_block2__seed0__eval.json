@@ -1,14 +1,9 @@
 {
-  "exp_id": "b2_500_block2",
+  "exp_id": "b1_500_block2",
   "seed": 0,
-  "phase": "trackB",
-  "feature_point": "conv",
-  "feature_dim": 4608,
-  "n_db_rows": 1000,
-  "n_query": 500,
-  "n_seasons": 2,
-  "wall_time_s": 4.78,
-  "device": "cuda:0",
+  "phase": "eval",
+  "wall_time_s": 7.76,
+  "device": "NVIDIA",
   "config": {
     "dataset": "nordland",
     "data_dir": "/home/ps/datasets/Nordland",
@@ -29,10 +24,10 @@
     "PR_curve": true,
     "sim_mat": false,
     "run_demo": false,
-    "exp_id": "b2_500_block2",
+    "exp_id": "b1_500_block2",
     "seed": 0,
     "patch_norm": "on",
-    "frontend": "conv_stdp",
+    "frontend": "random_conv",
     "wta_mode": "local",
     "wta_block": 2,
     "agg_mode": "mean",
@@ -42,13 +37,13 @@
     "conv_epoch": 2
   },
   "recallAtK": {
-    "1": 0.878,
-    "5": 0.946,
-    "10": 0.964,
-    "15": 0.97,
-    "20": 0.972,
-    "25": 0.976
+    "1": 0.89,
+    "5": 0.96,
+    "10": 0.97,
+    "15": 0.98,
+    "20": 0.98,
+    "25": 0.99
   },
-  "recallAt100precision": 0.4601,
-  "precisionAt100recall": 0.8851
+  "recallAt100precision": 0.24663677130044842,
+  "precisionAt100recall": 0.892
 }

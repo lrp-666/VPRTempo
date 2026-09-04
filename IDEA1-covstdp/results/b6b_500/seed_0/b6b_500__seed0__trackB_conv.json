@@ -1,5 +1,5 @@
 {
-  "exp_id": "b2_500_block2",
+  "exp_id": "b6b_500",
   "seed": 0,
   "phase": "trackB",
   "feature_point": "conv",
@@ -7,7 +7,7 @@
   "n_db_rows": 1000,
   "n_query": 500,
   "n_seasons": 2,
-  "wall_time_s": 4.78,
+  "wall_time_s": 4.55,
   "device": "cuda:0",
   "config": {
     "dataset": "nordland",
@@ -29,10 +29,10 @@
     "PR_curve": true,
     "sim_mat": false,
     "run_demo": false,
-    "exp_id": "b2_500_block2",
+    "exp_id": "b6b_500",
     "seed": 0,
     "patch_norm": "on",
-    "frontend": "conv_stdp",
+    "frontend": "gabor_stdp_freesign",
     "wta_mode": "local",
     "wta_block": 2,
     "agg_mode": "mean",
@@ -42,13 +42,13 @@
     "conv_epoch": 2
   },
   "recallAtK": {
-    "1": 0.878,
-    "5": 0.946,
-    "10": 0.964,
-    "15": 0.97,
-    "20": 0.972,
-    "25": 0.976
+    "1": 0.712,
+    "5": 0.852,
+    "10": 0.89,
+    "15": 0.922,
+    "20": 0.936,
+    "25": 0.952
   },
-  "recallAt100precision": 0.4601,
-  "precisionAt100recall": 0.8851
+  "recallAt100precision": 0.1517,
+  "precisionAt100recall": 0.7134
 }

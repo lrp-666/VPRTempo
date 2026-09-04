@@ -2,7 +2,7 @@
   "exp_id": "b2_500_block2",
   "seed": 0,
   "phase": "eval",
-  "wall_time_s": 7.95,
+  "wall_time_s": 2.9,
   "device": "NVIDIA",
   "config": {
     "dataset": "nordland",
