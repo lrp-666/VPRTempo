@@ -74,7 +74,7 @@ VPRTempo 把图像经 `ProcessImage` 展平成 [H*W] 向量后直接进全连接
 
 两条轨的四种组合对应四种结论，其中"轨B升、轨A不升"是最有分析价值的结果（特征有效但与 spike-forcing 读出失配），这是预留的退路故事（见 §6）。
 
-### 0.4 对照组设计逻辑（为什么必须是 B0–B5 六个 + 外部参照）
+### 0.4 对照组设计逻辑（B0–B6 + 外部参照）
 | 编号 | 前端 | 训练 | 排除的备择解释 |
 |---|---|---|---|
 | B0 | 无（原 VPRTempo） | — | 基线 |
@@ -82,7 +82,8 @@ VPRTempo 把图像经 `ProcessImage` 展平成 [H*W] 向量后直接进全连接
 | B2 | Conv-STDP 1层 | 无监督 STDP | 核心处理组 |
 | B3 | Conv-STDP 2层 | 逐层无监督 | "增益只是多了一层深度" |
 | B4 | 同结构 CNN | BP | 性能上界参照系，回答"无 BP 代价多大" |
-| B5 | **手工 Gabor 滤波器组** | 无需训练（手工设计，冻结） | "既然核收敛出 Gabor 结构，直接放固定 Gabor 不就完了"——审稿人必问，必须有这一行 |
+| B5 | **手工 Gabor 滤波器组** | 冻结（+ITP 阈值适配，S2.9 修订） | "直接放固定 Gabor 不就完了"——审稿人必问；实测 500 地轨 B 0.906 ≫ B2 0.772，已从威胁升级为参照系 |
+| B6 | **Gabor 初始化 + STDP**（v5 新增） | 无监督 STDP（在 Gabor 先验上微调） | "学习在好先验上有没有增量"——回答 B5 压制 B2 后学习叙事是否成立 |
 
 B1 vs B2 是 Gate 1 的关键对比：**两者用同一随机初始化、同一结构，唯一差别是 STDP 训没训**。
 
@@ -534,6 +535,26 @@ conv2（k=5, 无 padding）：28 → 24
 
 **验收**：B5 双轨数字落在合理区间（预期 ≥ B1，因为它是知情设计）；若 B5 < B1 需排查 Gabor 参数覆盖。
 
+### S2.10 B6：Gabor 初始化 + STDP 微调（v5 新增）
+
+**背景与动机**：B5 实测压制 B2（500 地轨 B 0.906 vs 0.772），核分析给出机制解释：ON/OFF 符号约束下单极性核**无法表达正负交替条纹**（只能到拉长脊），而 Gabor 方向条纹正是 VPR 检索更值钱的形态。B6 不再要求规则"从零发明 Gabor"，只问：**局部可塑性在手工先验上还有没有增量？** 这是"学习 vs 手工"一战决定性的格子。
+
+**结构冲突与两变体**（Gabor 带负瓣 vs ON 通道 clamp(min=0)，直接载入会被首个更新步的符号钳制毁掉）：
+- **B6a（主变体，ON/OFF 分解载入）**：每个 signed Gabor 核 G 分解为 G⁺=max(G,0) 与 G⁻=max(−G,0)，G⁺ 装 ON 通道、G⁻ 装 OFF 通道（负权重）。ON/OFF 对的联合响应 = conv(x,G⁺) − conv(x,G⁻) = conv(x,G)，**精确等于 signed Gabor 响应**，符号钳制全程无需放松，与"负瓣由 OFF 通道表达"叙事自洽。代价：每 Gabor 模式占 2 通道（16 Gabor → C=32 不变）；
+- **B6b（free-sign 变体）**：signed Gabor 原样载入 + 放开符号钳制训练。与 S3.3-8 的 free-sign 消融（随机初始化 + 放开钳制）互为对照，区分"条纹来自初始化还是来自放开约束后的学习"。
+
+**详细操作**：
+1. `gabor_frontend.py` 增加 `load_gabor_weights_decomposed`（B6a 分解载入）与 `free_sign=True` 开关（B6b，旁路 Step 7 符号钳制但保留保范数归一化）；`main.py --frontend` 加 `'gabor_stdp'`（=B6a）与 `'gabor_stdp_freesign'`（=B6b）。
+2. 训练流程与 B2 完全相同（STDP + ITP + WTA + 退火，**frozen=False**），默认参数先跑；若诊断显示条纹被洗掉（Gabor R² 大跌），迭代档试 conv_epoch=1 或更小 eta_stdp。
+3. **诊断防线（必做）**：训后核的 Gabor 拟合 R² vs B5（结构是否保持）、DC/AC 曲线、track B 单 seed（500 地，迭代档）。
+4. **预注册解读**：B6 > B5 → 学习有增量，学习叙事成立；B6 ≈ B5 → 手工前端即结论（转 B 故事）；B6 < B5 → 规则破坏好先验，线 3 机制解释实锤（转分析型叙事）。三种结果都有论文可写。
+
+**验收**：B6a 分解载入的联合响应与 signed Gabor 逐元素一致（数值断言）；B6a/B6b 的 500 地单 seed 轨 B 数字 + 训后核 R² 报告，回母会话决定进主表的形式。
+
+### S3.3-8 free-sign 消融（v5 新增，机制验证格）
+
+**背景**：核形态的机制假设是"ON/OFF 符号约束 ⇒ 学不出正负交替条纹"（S3.1 已观察到 B2 核为团块/脊状）。本格直接检验：**随机初始化 + 放开符号钳制（free-sign）的 B2**，其余与主组合完全相同。若 free-sign 版学出条纹状核且轨 B 提升 → 符号约束是条纹缺失的根因（机制实锤，论文一段有力的机制分析）；若无变化 → 根因在规则本身（不动点形态），假设被否，同样可写。实现：`conv_learning.py` 加 `free_sign` 开关（跳过 Step 7 钳制、保留归一化与 ON/OFF 前向取负——注意 free-sign 下 ON/OFF 取负语义需重新定义：抑制通道前向取负依赖权重≤0 假设，free-sign 时应关闭 ON/OFF 取负，回归 z = conv(x) 直通）。**优先级：与 B6 同批，主表前先在迭代档验证。**
+
 ---
 
 ## 5. 阶段 3：实验
@@ -555,7 +576,7 @@ conv2（k=5, 无 padding）：28 → 24
 ### S3.2 实验 1.1：主表（Table 1）
 
 **详细操作**：
-1. 矩阵：B0–B5 × 3 seeds × 双轨 × PatchNorm=on（off 归实验 1.4）× **双规模（500 地迭代用 + 3300 地会议规模判定用）**。双规模是阶段 1 规模探索的硬结论：500 地 encoder 天花板太近（轨 B 已 0.948）会出假阴性，正式判定必须在 3300 地（results/scale_check.md）。**B2 主组合钉死（= 阶梯 R4）**：C=32, k=5, conv_epoch=2, WTA=local(2×2), agg=mean, pre_mode=centered, **ITP=on, E/I=on（ON/OFF 通路）, homeostasis=off**。B5（Gabor 滤波器组）无需训练，3 seeds 只影响下游 feature/output 层初始化。
+1. 矩阵：B0–B6 × 3 seeds × 双轨 × PatchNorm=on（off 归实验 1.4）× **双规模（500 地迭代用 + 3300 地会议规模判定用）**。双规模是阶段 1 规模探索的硬结论：500 地 encoder 天花板太近（轨 B 已 0.948）会出假阴性，正式判定必须在 3300 地（results/scale_check.md）。**B2 主组合钉死（= 阶梯 R4）**：C=32, k=5, conv_epoch=2, WTA=local(2×2), agg=mean, pre_mode=centered, **ITP=on, E/I=on（ON/OFF 通路）, homeostasis=off**。B5（Gabor 冻结+ITP）无需训练核，B6（Gabor 初始化+STDP，v5）需训 conv，两者 3 seeds 影响下游初始化与 conv 训练随机性。
 2. 指标：Recall@1/5/10/25 为主 + recall@100%precision 互补（指标决策见 S1.4），PR 曲线图进正文。
 3. 执行：run_exp.py 批量 → `experiments/make_table1.py` 汇总 mean±std。
 4. 统计判据（提前承诺）：B2−B1（轨B）、B2−B0（轨A）报差值 ± 联合 std；3 seed 太少不做强显著性声明，以效应量为主，措辞谨慎。
@@ -610,7 +631,7 @@ conv2（k=5, 无 padding）：28 → 24
 |---|---|---|---|
 | Gate 0（阶段1出口） | B0 与第 -1b 步种子化 main 参照一致（±2 点）且 feat 默认参数逐比特回归通过 | 基础设施可信 | 不进阶段 2，先排查 |
 | Gate 1 | 轨B：B2 > B1，差值 > 3-seed 联合 std | 可塑性学到结构（核可视化佐证） | 回查 S2.3/S2.4（先查直流防线断言 4/5）；仍不过则整个 idea 重估 |
-| Gate 1.5 | 轨B：B2 ≥ B5（Gabor 手工组）− 1×std | 学习达到/超越手工滤波器 | B2 明显 < B5 → 规则没学到结构，回查 pre_mode 与 WTA；若 B5 反而最强，故事改为"手工前端 + SNN 读出"并弱化学习叙事 |
+| Gate 1.5 | 轨B：B2 ≥ B5（Gabor 手工组）− 1×std；**B6 vs B5 判定学习在好先验上有无增量（v5 主判据）** | 学习达到/超越手工滤波器 | B2 明显 < B5 → 弱化"从零学习"叙事（500 地已实测 −13.4 点）；B6 > B5 → 叙事转"手工先验 × 数据自适应"；B6 ≤ B5 → 转"手工前端 + SNN 读出"或分析型故事 |
 | Gate 2 | 轨A：B2 或 B3 > B0（**判定在 3300 地会议规模**，3 seeds） | 空间归纳偏置帮助完整系统 | **退路启动**：改分析型故事 |
 
 > **Gate 预演状态（单 seed，非正式判定）**：Gate 1 预演三规模全正（B2−B1 = +3.6/+5.6/+4.6 点，results/s25_b2_vs_b1_preview.md）；Gate 2 预演在 3300 地转正（block2：B2 轨 A 0.65 > B0 0.59，results/s25_block2_gpu_scales.md）。正式判定仍以 3-seed 主表为准——单 seed 趋势不能进论文。当前数据支持的主叙事：**"conv 前端的价值随规模增长"**（小规模读出无压力时压缩代价占主导；3300 地 spike-forcing 读出成为瓶颈，结构化特征胜出）。
@@ -673,7 +694,9 @@ conv2（k=5, 无 padding）：28 → 24
 - [ ] S2.7 B3 两层
 - [ ] S2.8 B4 CNN 参照
 - [x] S2.9 B5 Gabor 滤波器组前端（负瓣保护：frozen 守卫旁路 clamp/renorm；实测修订为冻权重+ITP 适配阈值，500 地 seed0 轨 B R@1=0.906 > B2 0.772，待 3300 地复核；见 results/s29_b5_gabor.md）
-- [ ] S3.1 核可视化（Figure 2）
+- [ ] S2.10 B6 Gabor 初始化 + STDP（v5：B6a ON/OFF 分解载入 / B6b free-sign）
+- [ ] S3.3-8 free-sign 消融（v5：随机初始化 + 放开符号钳制，机制验证"符号约束⇒无条纹"）
+- [x] S3.1 核可视化（Figure 2：results/fig2_kernels.png 三方并排 + fig2b_morphology_compare.png 形态对比；稀疏化 p=1.2e-12，方向条纹证据弱——符号约束下学不出正负交替，见 S2.10/S3.3-8 对策）
 - [ ] S3.2 主表（Table 1，Gate 1/2 判定）
 - [ ] S3.3 消融（Table 2/3/3b + 附录）
 - [ ] S3.4 效率（Table 4）
