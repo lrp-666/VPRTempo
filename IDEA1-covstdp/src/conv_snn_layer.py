@@ -85,11 +85,17 @@ class ConvSNNLayer(nn.Module):
                                        # calc_stdp_conv 入口直接返回——符号钳制与
                                        # 保范数归一化均不经过（负瓣保护，见
                                        # conv_learning.py 的 frozen 守卫）
+                 free_sign=False,      # free-sign 消融（S2.10 B6b / S3.3-8）：True 时
+                                       # 前向跳过 ON/OFF 取负（z=conv(x) 直通，因为抑制
+                                       # 通道取负依赖权重≤0 假设，free-sign 下不再成立），
+                                       # STDP 的 Step 6 统一 +η、Step 7 改为幅度安全钳
+                                       # clamp(-10,10)（见 conv_learning.py）
                  ):
         super(ConvSNNLayer, self).__init__()
         self.device = device
         self.inference = inference
         self.frozen = frozen
+        self.free_sign = free_sign
         self.wta_mode = wta_mode
         self.wta_block = wta_block
         self.in_channels = in_channels
@@ -169,17 +175,24 @@ class ConvSNNLayer(nn.Module):
         k = self.kernel_size
         W = torch.empty(C, self.in_channels, k, k, device=self.device)
 
-        exc = self.havconnExc
-        # 兴奋核：N(+0.5, 1/6)，负值裁剪为 0
-        W[exc] = torch.empty(exc.sum(), self.in_channels, k, k,
-                             device=self.device).normal_(mean=0.5, std=1.0 / 6.0)
-        W[exc] = W[exc].clamp(min=0.0)
-        # 抑制核：N(-0.5, 1/6)，正值裁剪为 0
-        inh = ~exc
-        if inh.any():
-            W[inh] = torch.empty(inh.sum(), self.in_channels, k, k,
-                                 device=self.device).normal_(mean=-0.5, std=1.0 / 6.0)
-            W[inh] = W[inh].clamp(max=0.0)
+        if self.free_sign:
+            # free-sign（S2.10 B6b / S3.3-8）：符号约束在初始化同步放开——所有通道
+            # N(0, 1/6) 带符号采样，不按 E/I 角色裁剪。若沿用符号裁剪，抑制通道在
+            # 直通前向（无 ON/OFF 取负）下对非负输入恒输出 ≤0，永久性死通道
+            # （无 winner → 无 STDP 更新），消融格将失去判别力。
+            W.normal_(mean=0.0, std=1.0 / 6.0)
+        else:
+            exc = self.havconnExc
+            # 兴奋核：N(+0.5, 1/6)，负值裁剪为 0
+            W[exc] = torch.empty(exc.sum(), self.in_channels, k, k,
+                                 device=self.device).normal_(mean=0.5, std=1.0 / 6.0)
+            W[exc] = W[exc].clamp(min=0.0)
+            # 抑制核：N(-0.5, 1/6)，正值裁剪为 0
+            inh = ~exc
+            if inh.any():
+                W[inh] = torch.empty(inh.sum(), self.in_channels, k, k,
+                                     device=self.device).normal_(mean=-0.5, std=1.0 / 6.0)
+                W[inh] = W[inh].clamp(max=0.0)
 
         # 每核 L1 归一化（范数为 0 的核置 1 防除零）
         nrm = torch.linalg.norm(W.flatten(1), ord=1, dim=1).view(C, 1, 1, 1)
@@ -207,8 +220,11 @@ class ConvSNNLayer(nn.Module):
         # ON/OFF 双通路（S2.1 设计修订）：兴奋（ON）通道响应正相关；
         # 抑制（OFF）通道响应负相关 —— 负号约束核若直接过 clamp(min=0) 会先天性死亡
         # （实测发放率精确 0），取负后成为 OFF 检测器（反相对比模式检测）。
-        exc = self.havconnExc.view(1, -1, 1, 1)
-        z = torch.where(exc, z, -z)
+        # free-sign（S2.10 B6b / S3.3-8）：跳过取负，z = conv(x) 直通——取负依赖
+        # 抑制核 ≤0 的假设，free-sign 下权重符号放开，该假设不再成立。
+        if not self.free_sign:
+            exc = self.havconnExc.view(1, -1, 1, 1)
+            z = torch.where(exc, z, -z)
         pre_wta = torch.clamp(z - self.thr, min=0.0, max=0.9)  # 对齐 clamp_spikes
 
         post_wta, winner_mask = self._apply_wta(pre_wta)

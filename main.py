@@ -468,7 +468,9 @@ def parse_network():
                         help="Random seed for reproducibility (IDEA1); default None = unseeded (original behavior)")
     # ---- IDEA1 S2.5：卷积前端相关参数（默认 frontend='none' = B0 原行为）----
     parser.add_argument('--frontend', type=str, default='none',
-                        choices=['none', 'conv_stdp', 'random_conv', 'gabor'],
+                        choices=['none', 'conv_stdp', 'random_conv', 'gabor',
+                                 'gabor_stdp', 'gabor_stdp_freesign',
+                                 'conv_stdp_freesign'],
                         help="Conv frontend type (IDEA1); default none = original VPRTempo")
     parser.add_argument('--wta_mode', type=str, default='local', choices=['global', 'local', 'none'],
                         help="WTA competition mode for conv frontend (IDEA1)")

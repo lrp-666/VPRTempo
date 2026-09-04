@@ -84,15 +84,24 @@ def is_conv_layer(obj):
 def build_conv_layer(model, dims, device, inference):
     """
     按配置构造 ConvSNNLayer。
-    frontend='conv_stdp'    —— 正常训练；
-    frontend='random_conv'  —— B1 对照：结构相同但 frozen=True（S2.6，train_new_model 分发时跳过训练）；
-    frontend='gabor'        —— B5：载入手工 Gabor 组并 frozen=True（S2.9；frozen 同时旁路
-                              STDP 的符号钳制与保范数归一化，守卫在 calc_stdp_conv 入口）。
+    frontend='conv_stdp'           —— 正常训练（B2）；
+    frontend='random_conv'         —— B1 对照：结构相同但 frozen=True（S2.6，train_new_model 分发时跳过训练）；
+    frontend='gabor'               —— B5：载入手工 Gabor 组并 frozen=True（S2.9；frozen 同时旁路
+                                     STDP 的符号钳制与保范数归一化，守卫在 calc_stdp_conv 入口）。
+    frontend='gabor_stdp'          —— B6a（S2.10）：16 个 σ=1.0 Gabor 模式 ON/OFF 分解载入
+                                     （通道 i ON 装 G⁺、i+16 OFF 装 −G⁻，确定性配对），frozen=False
+                                     ——STDP+ITP 正常跑，符号钳制不放松（ON−OFF ≡ conv(x,G)）。
+    frontend='gabor_stdp_freesign' —— B6b（S2.10）：signed Gabor 原样载入，frozen=False +
+                                     free_sign=True（前向跳过 ON/OFF 取负；Step 7 放开符号钳制、
+                                     仅留 clamp(-10,10) 幅度安全钳）。
+    frontend='conv_stdp_freesign'  —— S3.3-8 消融：带符号随机初始化 + free_sign=True，
+                                     其余与 B2 完全相同（机制验证"符号约束⇒无条纹"）。
     frozen 经构造参数传入（S2.9 起成为 ConvSNNLayer 的正式构造参数；对 random_conv
     与原先"构造后赋值属性"完全等价——不涉及随机数消耗，B1/B2 初始化可比性不变）。
     """
     frontend = getattr(model, 'frontend', 'none')
     ConvSNNLayer = _layer_mod().ConvSNNLayer
+    free_sign = frontend in ('gabor_stdp_freesign', 'conv_stdp_freesign')
     layer = ConvSNNLayer(
         input_dims=dims,
         in_channels=1,
@@ -107,11 +116,17 @@ def build_conv_layer(model, dims, device, inference):
         device=device,
         inference=inference,
         frozen=frontend in ('random_conv', 'gabor'),
+        free_sign=free_sign,
     )
     if frontend == 'gabor':
         # 推理侧同样载入：值与 state_dict 中的保存值逐元素一致（Gabor 组全程确定性），
         # load_model 加载后与训练侧无差异
         _gabor_mod().load_gabor_weights(layer)
+    elif frontend == 'gabor_stdp':
+        # B6a 分解载入（训练+推理两侧同路径；推理侧随后被 state_dict 覆盖，无害）
+        _gabor_mod().load_gabor_weights_decomposed(layer)
+    elif frontend == 'gabor_stdp_freesign':
+        _gabor_mod().load_gabor_weights_signed(layer)
     return layer
 
 

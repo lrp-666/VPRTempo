@@ -116,13 +116,22 @@ def calc_stdp_conv(pre_img,   # [1, C_in, H, W] 输入 spike 图（已 reshape�
         nrm_before = torch.linalg.norm(W.flatten(1), ord=1, dim=1)  # [C]
 
         # ---- Step 6: 权重更新（E/I 分组学习率）----
-        sign = torch.where(layer.havconnExc, 1.0, -1.0).view(C, 1, 1, 1)
-        W += layer.eta_stdp * sign * dK
+        # free-sign（S2.10 B6b / S3.3-8）：统一 +η（分组符号依赖"抑制核 ≤0"的语义，
+        # 符号放开后不再成立）
+        if getattr(layer, 'free_sign', False):
+            W += layer.eta_stdp * dK
+        else:
+            sign = torch.where(layer.havconnExc, 1.0, -1.0).view(C, 1, 1, 1)
+            W += layer.eta_stdp * sign * dK
 
         # ---- Step 7: 符号钳制（兴奋核 [0,10]，抑制核 [-10,0]）----
-        exc = layer.havconnExc.view(C, 1, 1, 1)
-        layer.w.weight.data = torch.where(exc, W.clamp(min=0.0, max=10.0),
-                                          W.clamp(min=-10.0, max=0.0))
+        # free-sign：放开符号钳制，仅保留幅度安全钳 clamp(-10,10) 防爆（S3.3-8）
+        if getattr(layer, 'free_sign', False):
+            layer.w.weight.data = W.clamp(min=-10.0, max=10.0)
+        else:
+            exc = layer.havconnExc.view(C, 1, 1, 1)
+            layer.w.weight.data = torch.where(exc, W.clamp(min=0.0, max=10.0),
+                                              W.clamp(min=-10.0, max=0.0))
 
         # ---- Step 8: 保范数 L1 归一化（仅本次有更新且范数非零的通道）----
         updated = (dK.abs().flatten(1).sum(dim=1) > 0)
@@ -178,12 +187,17 @@ def calc_stdp_conv_reference(pre_img, out, layer, pre_mode='centered', agg_mode=
             dK = dK / counts.view(C, 1, 1, 1).clamp(min=1.0)
 
         # E/I 分组学习率 + 更新 + 钳制 + 保范数归一化（与正式版同序）
+        # free-sign 同步：统一 +η、幅度安全钳 clamp(-10,10)（见 calc_stdp_conv Step 6/7）
+        free_sign = getattr(layer, 'free_sign', False)
         sign = torch.where(layer.havconnExc, 1.0, -1.0).view(C, 1, 1, 1).to(W.device)
         nrm_before = torch.linalg.norm(W.flatten(1), ord=1, dim=1)
-        W += layer.eta_stdp * sign * dK
-        exc = layer.havconnExc.view(C, 1, 1, 1)
-        layer.w.weight.data = torch.where(exc, W.clamp(min=0.0, max=10.0),
-                                          W.clamp(min=-10.0, max=0.0))
+        W += layer.eta_stdp * (dK if free_sign else sign * dK)
+        if free_sign:
+            layer.w.weight.data = W.clamp(min=-10.0, max=10.0)
+        else:
+            exc = layer.havconnExc.view(C, 1, 1, 1)
+            layer.w.weight.data = torch.where(exc, W.clamp(min=0.0, max=10.0),
+                                              W.clamp(min=-10.0, max=0.0))
         nrm_after = torch.linalg.norm(layer.w.weight.data.flatten(1), ord=1, dim=1)
         updated = (counts > 0)
         scale = torch.ones_like(nrm_before)
