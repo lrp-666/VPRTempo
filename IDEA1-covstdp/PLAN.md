@@ -694,8 +694,8 @@ conv2（k=5, 无 padding）：28 → 24
 - [ ] S2.7 B3 两层
 - [ ] S2.8 B4 CNN 参照
 - [x] S2.9 B5 Gabor 滤波器组前端（负瓣保护：frozen 守卫旁路 clamp/renorm；实测修订为冻权重+ITP 适配阈值，500 地 seed0 轨 B R@1=0.906 > B2 0.772，待 3300 地复核；见 results/s29_b5_gabor.md）
-- [ ] S2.10 B6 Gabor 初始化 + STDP（v5：B6a ON/OFF 分解载入 / B6b free-sign）
-- [ ] S3.3-8 free-sign 消融（v5：随机初始化 + 放开符号钳制，机制验证"符号约束⇒无条纹"）
+- [x] S2.10 B6 Gabor 初始化 + STDP（B6a 分解载入断言 5/5，500 地 seed0 轨 B：B6a 0.936 < B5 0.984 > B2 0.878；B6a/B6b 训后条纹保留 R²≈0.98；B6b 工作点崩塌——thr 触底、发放率 3-5%、轨 A 0.13；见 results/s210_b6_preview.md，进主表形式待母会话判定）
+- [x] S3.3-8 free-sign 消融（随机初始化 + 放开钳制：R² 0.449 ≈ B2 无条纹——按预注册解读"符号约束⇒无条纹"假设被否，根因在规则不动点形态；但轨 B 0.978 ≈ B5，符号约束仍是检索性能限制因素；见 results/s210_b6_preview.md）
 - [x] S3.1 核可视化（Figure 2：results/fig2_kernels.png 三方并排 + fig2b_morphology_compare.png 形态对比；稀疏化 p=1.2e-12，方向条纹证据弱——符号约束下学不出正负交替，见 S2.10/S3.3-8 对策）
 - [ ] S3.2 主表（Table 1，Gate 1/2 判定）
 - [ ] S3.3 消融（Table 2/3/3b + 附录）
