@@ -495,6 +495,17 @@ def parse_network():
                         help="Conv frontend ITP learning rate (IDEA1 tuning)")
     parser.add_argument('--conv_stdp_rate', type=float, default=0.005,
                         help="Conv frontend STDP learning rate (IDEA1 tuning)")
+    # ---- IDEA1 fork G：ITP 阈值地板（默认 0.0 = 原行为不变）----
+    # free-sign 变体（B6b/conv_stdp_freesign）直通前向下可达发放率结构性偏低，
+    # ITP 追目标发放率把阈值推到 0 后被 clamp(min=0) 卡死（工作点崩塌，见
+    # results/s210_b6_preview.md §3）。允许负地板（如 -0.5）后 ITP 继续有效。
+    parser.add_argument('--conv_thr_min', type=float, default=0.0,
+                        help="Lower bound for conv frontend ITP threshold clamp (IDEA1); "
+                             "default 0.0 = original behavior; free-sign variants may use negative values")
+    # ---- IDEA1 fork G：B1+ITP 主表行（S3.2 第 6 条 ITP 匹配对照）----
+    parser.add_argument('--itp_on_frozen', action='store_true',
+                        help="Keep ITP threshold adaptation on a frozen conv frontend "
+                             "(e.g. random_conv); B5 gabor enables this internally (IDEA1)")
     # ---- IDEA1 S2.11 规则锦标赛 Round 1：四个独立可组合的规则手术开关（默认全关 = B2 不变）----
     parser.add_argument('--bcm_gate', action='store_true',
                         help="R1: BCM sliding threshold theta_M (EMA of post^2) replaces fixed 0.5 in conv STDP (IDEA1 S2.11)")

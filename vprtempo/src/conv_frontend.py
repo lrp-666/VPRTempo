@@ -116,6 +116,13 @@ def build_conv_layer(model, dims, device, inference):
     规则手术开关（及参数 bcm_alpha / rank_delta / rank_k）经 model 属性透传到
     ConvSNNLayer，缺省全关 = B2 主组合行为不变；仅训练路径（calc_stdp_conv）消费，
     推理前向不受任何影响。
+
+    fork G（S3.2 主表前置）：
+    - conv_thr_min：ITP 阈值地板（apply_itp_conv 的 clamp 下界），默认 0.0 行为
+      不变；free-sign 变体允许负值解除 thr 触底卡死（s210_b6_preview.md §3）。
+    - itp_on_frozen：model 属性为 True 时在冻结前端上保留 ITP 阈值自适应
+      （B1+ITP 主表行：random_conv + ITP，与 B5 同待遇的 ITP 匹配对照，PLAN S3.2
+      第 6 条）。B5 的 itp_on_frozen 仍由 load_gabor_weights 内部设置（S2.9 修订）。
     """
     frontend = getattr(model, 'frontend', 'none')
     ConvSNNLayer = _layer_mod().ConvSNNLayer
@@ -126,6 +133,7 @@ def build_conv_layer(model, dims, device, inference):
         out_channels=int(getattr(model, 'conv_channels', 32)),
         kernel_size=int(getattr(model, 'conv_kernel', 5)),
         thr_range=_parse_pair(getattr(model, 'conv_thr_range', '0,0.5')),
+        thr_min=float(getattr(model, 'conv_thr_min', 0.0)),
         fire_rate=_parse_pair(getattr(model, 'conv_fire_rate', '0.2,0.9')),
         ip_rate=float(getattr(model, 'conv_ip_rate', 0.15)),
         stdp_rate=float(getattr(model, 'conv_stdp_rate', 0.005)),
@@ -153,6 +161,12 @@ def build_conv_layer(model, dims, device, inference):
         _gabor_mod().load_gabor_weights_decomposed(layer)
     elif frontend == 'gabor_stdp_freesign':
         _gabor_mod().load_gabor_weights_signed(layer)
+    # fork G（S3.2 主表 B1+ITP 行）：冻结前端 + ITP 阈值自适应。Gabor 路径的
+    # itp_on_frozen 由 load_gabor_weights 设置；此处覆盖 random_conv 等其余冻结
+    # 前端（model.itp_on_frozen=True 时开启）。只影响训练分发（VPRTempoTrain
+    # 对 frozen+itp_on_frozen 层仍跑 train_conv_layer），权重始终冻结。
+    if bool(getattr(model, 'itp_on_frozen', False)):
+        layer.itp_on_frozen = True
     return layer
 
 

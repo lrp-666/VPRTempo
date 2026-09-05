@@ -77,6 +77,10 @@ class ConvSNNLayer(nn.Module):
                  ip_rate=0.15,         # ITP 学习率（下一个 fork 使用，先存起来）
                  stdp_rate=0.005,      # STDP 学习率（下一个 fork 使用，先存起来）
                  p_exc=0.5,            # 兴奋通道比例（通道级 E/I，S2.1 卡片）
+                 thr_min=0.0,          # ITP 阈值地板（apply_itp_conv 的 clamp 下界）。
+                                       # 默认 0.0 = 对齐 blitnet.py:606 原行为；
+                                       # free-sign 变体允许负值（如 -0.5），解除
+                                       # thr 触底卡死（fork G，见 s210_b6_preview §3）
                  wta_mode='local',     # {'global','local','none'}
                  wta_block=4,          # local WTA 的块边长（即池化倍率）
                  device=None,
@@ -119,6 +123,7 @@ class ConvSNNLayer(nn.Module):
         self.attractor = attractor
         self.wta_mode = wta_mode
         self.wta_block = wta_block
+        self.thr_min = float(thr_min)
         self.in_channels = in_channels
         self.out_channels = out_channels
         self.kernel_size = kernel_size

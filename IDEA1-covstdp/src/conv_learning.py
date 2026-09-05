@@ -361,7 +361,10 @@ def apply_itp_conv(out, layer):
     with torch.no_grad():
         observed = (out.pre_wta > 0).float().mean(dim=(2, 3), keepdim=True)  # [1,C,1,1]
         layer.thr.data += layer.eta_ip * (observed - layer.fire_rate)
-        layer.thr.data.clamp_(min=0)                                          # 对齐 blitnet.py:606
+        # 阈值地板取层的 thr_min（fork G）：默认 0.0 对齐 blitnet.py:606；
+        # free-sign 变体允许负值（如 -0.5），否则 ITP 把阈值推到 0 被 clamp
+        # 卡死、工作点崩塌（s210_b6_preview.md §3 的 B6b 病因）
+        layer.thr.data.clamp_(min=getattr(layer, 'thr_min', 0.0))
 
 
 # ================================================================================
