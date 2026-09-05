@@ -486,6 +486,15 @@ def parse_network():
                         help="Conv frontend kernel size (IDEA1)")
     parser.add_argument('--conv_epoch', type=int, default=2,
                         help="Conv frontend training epochs (IDEA1)")
+    # ---- IDEA1 S3.2a 调参窗：conv 前端四个原硬编码超参（默认值与硬编码完全一致，默认行为不变）----
+    parser.add_argument('--conv_thr_range', type=str, default="0,0.5",
+                        help="Conv frontend initial threshold range \"lo,hi\" (IDEA1 tuning)")
+    parser.add_argument('--conv_fire_rate', type=str, default="0.2,0.9",
+                        help="Conv frontend target firing rate range \"lo,hi\" (IDEA1 tuning)")
+    parser.add_argument('--conv_ip_rate', type=float, default=0.15,
+                        help="Conv frontend ITP learning rate (IDEA1 tuning)")
+    parser.add_argument('--conv_stdp_rate', type=float, default=0.005,
+                        help="Conv frontend STDP learning rate (IDEA1 tuning)")
 
     # ------------------------------------------------------------------------
     # 【行级】网络功能开关（布尔标志）

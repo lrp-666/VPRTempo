@@ -81,6 +81,15 @@ def is_conv_layer(obj):
     return isinstance(obj, _layer_mod().ConvSNNLayer)
 
 
+def _parse_pair(value):
+    """解析 "lo,hi" 字符串为 [lo, hi] 浮点对（与 main.py --dims "28,28" 风格一致）。
+    已非字符串（如旧配置直接给列表）时原样透传。默认值与原硬编码完全一致，
+    默认路径行为逐比特不变。"""
+    if isinstance(value, str):
+        return [float(x) for x in value.split(",")]
+    return list(value)
+
+
 def build_conv_layer(model, dims, device, inference):
     """
     按配置构造 ConvSNNLayer。
@@ -98,6 +107,10 @@ def build_conv_layer(model, dims, device, inference):
                                      其余与 B2 完全相同（机制验证"符号约束⇒无条纹"）。
     frozen 经构造参数传入（S2.9 起成为 ConvSNNLayer 的正式构造参数；对 random_conv
     与原先"构造后赋值属性"完全等价——不涉及随机数消耗，B1/B2 初始化可比性不变）。
+
+    S3.2a 调参窗：thr_range / fire_rate / ip_rate / stdp_rate 四个超参改为经
+    model 属性配置（conv_thr_range / conv_fire_rate 为 "lo,hi" 字符串对，
+    conv_ip_rate / conv_stdp_rate 为标量），缺省时取原硬编码默认值，默认行为不变。
     """
     frontend = getattr(model, 'frontend', 'none')
     ConvSNNLayer = _layer_mod().ConvSNNLayer
@@ -107,10 +120,10 @@ def build_conv_layer(model, dims, device, inference):
         in_channels=1,
         out_channels=int(getattr(model, 'conv_channels', 32)),
         kernel_size=int(getattr(model, 'conv_kernel', 5)),
-        thr_range=[0, 0.5],
-        fire_rate=[0.2, 0.9],
-        ip_rate=0.15,
-        stdp_rate=0.005,
+        thr_range=_parse_pair(getattr(model, 'conv_thr_range', '0,0.5')),
+        fire_rate=_parse_pair(getattr(model, 'conv_fire_rate', '0.2,0.9')),
+        ip_rate=float(getattr(model, 'conv_ip_rate', 0.15)),
+        stdp_rate=float(getattr(model, 'conv_stdp_rate', 0.005)),
         wta_mode=getattr(model, 'wta_mode', 'local'),
         wta_block=int(getattr(model, 'wta_block', 4)),
         device=device,
