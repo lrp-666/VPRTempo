@@ -778,7 +778,7 @@ conv2（k=5, 无 padding）：28 → 24
 - [x] S3.1 核可视化（Figure 2：results/fig2_kernels.png 三方并排 + fig2b_morphology_compare.png 形态对比；稀疏化 p=1.2e-12，方向条纹证据弱——符号约束下学不出正负交替，见 S2.10/S3.3-8 对策）
 - [ ] S3.2 主表（Table 1，Gate 1/2 判定）
 - [x] S3.2a 调参窗（迭代档 9 格完成：conv_epoch=4 与 eta_stdp=0.01 各 +0.6 点（低于 2 点换锚阈值，仅作工作点设定），eta_ip/thr_range 平坦，fire_rate 收窄变差；确认档待补 eta_stdp=0.02 边界探针与 conv_epoch∈{4,8} 轨A复核；见 results/s32a_tuning.md）
-- [ ] S2.11 新学习规则探索（v6：调研报告 → 候选规则 → 玩具测试 + 迭代档对照）
+- [x] S2.11 新学习规则探索（v6：锦标赛 Round 1 完成——R1 BCM +0.4pt（噪声内）、R2 名次 −2.2pt、R3 Oja −0.8pt、R4 弹性项玩具测试未过门槛（DC/AC 塌缩）被淘汰；**无变体达到 R0+2pt 胜出判据，Round 2 按协议取消**。结论：规则形式不是杠杆——与 freesign（符号约束）/B5（先验）结果共同构成"约束与先验才是杠杆"的证据链；见 results/s211_round1.md）
 - [ ] S3.3 消融（Table 2/3/3b + 附录）
 - [ ] S3.4 效率（Table 4）
 - [ ] S3.5 ORC 复跑 + SpikingJelly 参照
