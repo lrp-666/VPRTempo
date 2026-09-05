@@ -10,6 +10,7 @@
 # 用法（在 GPU 工作站上，tmux 里跑）：
 #   tmux new -s table1
 #   cd /home/ps/workspace/VPRTempo
+#   export PATH="$HOME/.pixi/bin:$PATH"   # 工作站非交互 shell 不带 pixi，必须先加
 #   bash IDEA1-covstdp/experiments/run_table1.sh            # 双卡（GPU 0/1）
 #   NUM_GPUS=1 bash IDEA1-covstdp/experiments/run_table1.sh # 单卡调试
 #   PIXI_ENV="" bash ...                                    # 默认 pixi 环境（本机 CPU）
