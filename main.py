@@ -495,6 +495,21 @@ def parse_network():
                         help="Conv frontend ITP learning rate (IDEA1 tuning)")
     parser.add_argument('--conv_stdp_rate', type=float, default=0.005,
                         help="Conv frontend STDP learning rate (IDEA1 tuning)")
+    # ---- IDEA1 S2.11 规则锦标赛 Round 1：四个独立可组合的规则手术开关（默认全关 = B2 不变）----
+    parser.add_argument('--bcm_gate', action='store_true',
+                        help="R1: BCM sliding threshold theta_M (EMA of post^2) replaces fixed 0.5 in conv STDP (IDEA1 S2.11)")
+    parser.add_argument('--bcm_alpha', type=float, default=0.001,
+                        help="R1: EMA rate for theta_M (10-50x slower than weight learning, prevents ITP oscillation)")
+    parser.add_argument('--rank_push', action='store_true',
+                        help="R2: rank-k channel within each WTA block gets -delta times update (IDEA1 S2.11)")
+    parser.add_argument('--rank_delta', type=float, default=0.4,
+                        help="R2: negative update strength delta for the rank-k channel")
+    parser.add_argument('--rank_k', type=int, default=2,
+                        help="R2: which cross-channel rank receives the negative update")
+    parser.add_argument('--oja_decay', action='store_true',
+                        help="R3: replace norm-preserving renorm with Oja decay term -post^2*w (IDEA1 S2.11)")
+    parser.add_argument('--attractor', action='store_true',
+                        help="R4: pre-term (pre-0.5) -> (patch - kernel) reconstruction attractor (IDEA1 S2.11)")
 
     # ------------------------------------------------------------------------
     # 【行级】网络功能开关（布尔标志）

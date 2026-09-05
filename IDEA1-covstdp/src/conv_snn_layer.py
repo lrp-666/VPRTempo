@@ -90,12 +90,33 @@ class ConvSNNLayer(nn.Module):
                                        # 通道取负依赖权重≤0 假设，free-sign 下不再成立），
                                        # STDP 的 Step 6 统一 +η、Step 7 改为幅度安全钳
                                        # clamp(-10,10)（见 conv_learning.py）
+                 # ---- S2.11 规则锦标赛 Round 1 开关（默认全关 = B2 行为不变）----
+                 bcm_gate=False,       # R1 BCM 滑动阈值：(0.5−post) → (θ_M,c − post)，
+                                       # θ_M,c 为每通道 EMA of post²（α=bcm_alpha，
+                                       # 初值 0.25=0.5²，与现规则不动点兼容）
+                 bcm_alpha=0.001,      # θ_M 滑动速率（须慢于权重学习 10–50×，防与 ITP 振荡）
+                 rank_push=False,      # R2 名次反推：块内跨通道第 rank_k 名通道在其
+                                       # winner 位置给予 −rank_delta 倍更新（KH 式去相关）
+                 rank_delta=0.4,       # R2 反推强度 δ
+                 rank_k=2,             # R2 反推名次 k
+                 oja_decay=False,      # R3 Oja 衰减：关 Step 8 保范数归一化，更新里加
+                                       # −post²·K_c 衰减项（幅度安全钳保留）
+                 attractor=False,      # R4 弹性项：pre_term (pre−0.5) → (patch − 当前核)
+                                       # （重构式吸引子；dK = corr(pre_img,M) − (ΣM_c)·K_c）
                  ):
         super(ConvSNNLayer, self).__init__()
         self.device = device
         self.inference = inference
         self.frozen = frozen
         self.free_sign = free_sign
+        # S2.11 Round 1 规则开关（默认全关 = B2 主组合行为不变）
+        self.bcm_gate = bcm_gate
+        self.bcm_alpha = float(bcm_alpha)
+        self.rank_push = rank_push
+        self.rank_delta = float(rank_delta)
+        self.rank_k = int(rank_k)
+        self.oja_decay = oja_decay
+        self.attractor = attractor
         self.wta_mode = wta_mode
         self.wta_block = wta_block
         self.in_channels = in_channels
@@ -161,6 +182,12 @@ class ConvSNNLayer(nn.Module):
 
         # 卷积版权重初始化（addWeights 的卷积版，见下方函数）
         self.w.weight = self._add_conv_weights()
+
+        # R1 BCM 滑动阈值 θ_M [1,C,1,1]（S2.11）：普通属性而非 buffer/parameter
+        # —— 推理不需要（calc_stdp_conv 仅在训练路径调用），不进 state_dict，
+        # 训练态/推理态加载键不受影响。初值 0.25 = 0.5²，与现规则不动点兼容。
+        if self.bcm_gate:
+            self.theta_m = torch.full([1, out_channels, 1, 1], 0.25, device=device)
 
     # ================================================================================
     # 函数：_add_conv_weights —— addWeights 的卷积版（S2.1 卡片第 3 条）

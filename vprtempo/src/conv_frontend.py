@@ -111,6 +111,11 @@ def build_conv_layer(model, dims, device, inference):
     S3.2a 调参窗：thr_range / fire_rate / ip_rate / stdp_rate 四个超参改为经
     model 属性配置（conv_thr_range / conv_fire_rate 为 "lo,hi" 字符串对，
     conv_ip_rate / conv_stdp_rate 为标量），缺省时取原硬编码默认值，默认行为不变。
+
+    S2.11 规则锦标赛 Round 1：bcm_gate / rank_push / oja_decay / attractor 四个
+    规则手术开关（及参数 bcm_alpha / rank_delta / rank_k）经 model 属性透传到
+    ConvSNNLayer，缺省全关 = B2 主组合行为不变；仅训练路径（calc_stdp_conv）消费，
+    推理前向不受任何影响。
     """
     frontend = getattr(model, 'frontend', 'none')
     ConvSNNLayer = _layer_mod().ConvSNNLayer
@@ -130,6 +135,14 @@ def build_conv_layer(model, dims, device, inference):
         inference=inference,
         frozen=frontend in ('random_conv', 'gabor'),
         free_sign=free_sign,
+        # S2.11 Round 1 规则开关（默认全关 = B2 行为不变；推理侧不使用但保持属性一致）
+        bcm_gate=bool(getattr(model, 'bcm_gate', False)),
+        bcm_alpha=float(getattr(model, 'bcm_alpha', 0.001)),
+        rank_push=bool(getattr(model, 'rank_push', False)),
+        rank_delta=float(getattr(model, 'rank_delta', 0.4)),
+        rank_k=int(getattr(model, 'rank_k', 2)),
+        oja_decay=bool(getattr(model, 'oja_decay', False)),
+        attractor=bool(getattr(model, 'attractor', False)),
     )
     if frontend == 'gabor':
         # 推理侧同样载入：值与 state_dict 中的保存值逐元素一致（Gabor 组全程确定性），
