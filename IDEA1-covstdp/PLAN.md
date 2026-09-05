@@ -750,7 +750,7 @@ conv2（k=5, 无 padding）：28 → 24
 
 | # | 事项 | 锁定值 |
 |---|---|---|
-| 1 | B2 主组合完整配置 | C=32, k=5, conv_epoch=2, WTA=local(2×2)（v4 修订）, agg=mean, pre_mode=centered, **ITP=on, E/I=on（ON/OFF 通路）, homeostasis=off**（= 阶梯 R4，S3.2 已同步）；主实验双规模（500 迭代 + 3300 判定） |
+| 1 | B2 主组合完整配置 | C=32, k=5, conv_epoch=**4**（S3.2a 调参窗，v6 修订）, WTA=local(2×2)（v4 修订）, agg=mean, pre_mode=centered, **ITP=on, E/I=on（ON/OFF 通路）, homeostasis=off**，conv_stdp_rate=**0.01**（S3.2a，边界值——确认档补探 0.02 后终锁）（= 阶梯 R4，S3.2 已同步）；主实验双规模（500 迭代 + 3300 判定） |
 | 2 | 轨 B 特征点 | 池化后 flatten 向量（block2 主组合 = 4,608 维；feature_layer 实际看到的向量），全变体统一 |
 | 3 | Gate 0 判据 | 第 -1b 步种子化 main 参照 ±2 点 + feat 默认参数逐比特回归（论文 3300 地数字只作量级 sanity） |
 | 4 | 调参与规模协议（三档） | **迭代档**（开发/消融初筛）：500 地 × 单 seed × 轨 B 优先；**确认档**（有戏的格子）：3300 地 × 单 seed × 双轨；**正式档**（进论文的表）：500+3300 × 3 seeds × 双轨。锁定写入配置文件再跑正式档；只有正式档数字进论文。1000 地退出常规协议，仅在 500/3300 结果矛盾需定位时启用 |
@@ -777,7 +777,7 @@ conv2（k=5, 无 padding）：28 → 24
 - [x] S3.3-8 free-sign 消融（随机初始化 + 放开钳制：R² 0.449 ≈ B2 无条纹——按预注册解读"符号约束⇒无条纹"假设被否，根因在规则不动点形态；但轨 B 0.978 ≈ B5，符号约束仍是检索性能限制因素；见 results/s210_b6_preview.md）
 - [x] S3.1 核可视化（Figure 2：results/fig2_kernels.png 三方并排 + fig2b_morphology_compare.png 形态对比；稀疏化 p=1.2e-12，方向条纹证据弱——符号约束下学不出正负交替，见 S2.10/S3.3-8 对策）
 - [ ] S3.2 主表（Table 1，Gate 1/2 判定）
-- [ ] S3.2a 调参窗（v6：conv_epoch/eta_stdp/eta_ip/thr_range/fire_rate 贪心扫，迭代档）
+- [x] S3.2a 调参窗（迭代档 9 格完成：conv_epoch=4 与 eta_stdp=0.01 各 +0.6 点（低于 2 点换锚阈值，仅作工作点设定），eta_ip/thr_range 平坦，fire_rate 收窄变差；确认档待补 eta_stdp=0.02 边界探针与 conv_epoch∈{4,8} 轨A复核；见 results/s32a_tuning.md）
 - [ ] S2.11 新学习规则探索（v6：调研报告 → 候选规则 → 玩具测试 + 迭代档对照）
 - [ ] S3.3 消融（Table 2/3/3b + 附录）
 - [ ] S3.4 效率（Table 4）
