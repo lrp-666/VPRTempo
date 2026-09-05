@@ -627,13 +627,14 @@ conv2（k=5, 无 padding）：28 → 24
 ### S3.2 实验 1.1：主表（Table 1）
 
 **详细操作**：
-1. 矩阵：B0–B6 × 3 seeds × 双轨 × PatchNorm=on（off 归实验 1.4）× **双规模（500 地迭代用 + 3300 地会议规模判定用）**。双规模是阶段 1 规模探索的硬结论：500 地 encoder 天花板太近（轨 B 已 0.948）会出假阴性，正式判定必须在 3300 地（results/scale_check.md）。**B2 主组合钉死（= 阶梯 R4）**：C=32, k=5, conv_epoch=2, WTA=local(2×2), agg=mean, pre_mode=centered, **ITP=on, E/I=on（ON/OFF 通路）, homeostasis=off**。B5（Gabor 冻结+ITP）无需训练核，B6（Gabor 初始化+STDP，v5）需训 conv，两者 3 seeds 影响下游初始化与 conv 训练随机性。
+1. 矩阵：B0 / B1 / B1+ITP / B2 / B2+BCM（R1，确认档复活）/ B5 / B6a / freesign（B6b 视 thr 修复情况）× 3 seeds × 双轨 × PatchNorm=on（off 归实验 1.4）× **双规模（500 地迭代用 + 3300 地会议规模判定用）**。双规模是阶段 1 规模探索的硬结论：500 地 encoder 天花板太近（轨 B 已 0.948）会出假阴性，正式判定必须在 3300 地（results/scale_check.md）。**B2 主组合钉死（= 阶梯 R4）**：C=32, k=5, conv_epoch=**4**, conv_stdp_rate=**0.01**（S3.2a 锁定）, WTA=local(2×2), agg=mean, pre_mode=centered, **ITP=on, E/I=on（ON/OFF 通路）, homeostasis=off**。
 2. 指标：Recall@1/5/10/25 为主 + recall@100%precision 互补（指标决策见 S1.4），PR 曲线图进正文。
 3. 执行：run_exp.py 批量 → `experiments/make_table1.py` 汇总 mean±std。
 4. 统计判据（提前承诺）：B2−B1（轨B）、B2−B0（轨A）报差值 ± 联合 std；3 seed 太少不做强显著性声明，以效应量为主，措辞谨慎。
 5. **B2 vs B5 单段分析**（主表自带的小节素材）：学习 vs 手工设计，三种结果的叙事预案见 §0.4。
 6. **ITP 匹配对照行（S2.9 修订后新增，隔离核来源的干净对比）**：主表补 **B1+ITP**（冻随机核 + ITP 阈值自适应，与 B5 同待遇）。原因：S2.9 实测发现 B5 无 ITP 时工作点失配（25/32 通道死亡），B5 已修订为冻权重+ITP；因此"B1 vs B2"与"B1 vs B5"若在 ITP 不一致下比较会混入第二变量。对照逻辑：B1+ITP vs B5 = 核来源（随机 vs 手工）；B1+ITP vs B2 = 核来源+学习（随机 vs 学习）。
 7. **free-sign 升级为主表正式行（v5 迭代档后，原 S3.3-8 消融格）**：`conv_stdp_freesign` 迭代档轨 B 0.978 ≈ B5，机制价值（符号约束是性能瓶颈）超出消融格量级，升主表。**待办（fork G 开工前必查）**：freesign/B6b 的 thr 触底问题（ITP 把阈值推到 0 被 clamp(min=0) 卡死）——评估允许 thr<0 或给 free-sign 配单独 fire_rate 范围；B6b 修复后再决定是否进主表，不修复则只在消融里以"工作点崩塌"案例呈现。
+8. **选品判据（预注册，主表出来后按此选 winner 打磨组合，防止事后挑数）**：主排序指标 = **3300 地轨 A R@1**（系统级、论文门面）；次级 = 3300 地轨 B R@100%P（encoder 质量最敏感口径）；平局时比效率（Table 4 数据）。选出 2–3 个 winner 后允许做**组合打磨**（如 B5 初始化+BCM、freesign+BCM），组合配置必须重新跑完整正式档验证（防交互效应），且组合超参若需调整只能在迭代档/验证集上做。主表数字一经落盘，主表阵容不再变动（防止无限加格子）。
 
 **验收**：Table 1 完整，Gate 1 / Gate 1.5 / Gate 2 判定明确（§6）。
 
