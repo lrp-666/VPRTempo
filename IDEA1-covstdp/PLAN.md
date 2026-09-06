@@ -784,7 +784,7 @@ conv2（k=5, 无 padding）：28 → 24
 - [x] S2.10 B6 Gabor 初始化 + STDP（B6a 分解载入断言 5/5，500 地 seed0 轨 B：B6a 0.936 < B5 0.984 > B2 0.878；B6a/B6b 训后条纹保留 R²≈0.98；B6b 工作点崩塌——thr 触底、发放率 3-5%、轨 A 0.13；见 results/s210_b6_preview.md，进主表形式待母会话判定）
 - [x] S3.3-8 free-sign 消融（随机初始化 + 放开钳制：R² 0.449 ≈ B2 无条纹——按预注册解读"符号约束⇒无条纹"假设被否，根因在规则不动点形态；但轨 B 0.978 ≈ B5，符号约束仍是检索性能限制因素；见 results/s210_b6_preview.md）
 - [x] S3.1 核可视化（Figure 2：results/fig2_kernels.png 三方并排 + fig2b_morphology_compare.png 形态对比；稀疏化 p=1.2e-12，方向条纹证据弱——符号约束下学不出正负交替，见 S2.10/S3.3-8 对策）
-- [ ] S3.2 主表（Table 1，Gate 1/2 判定）
+- [x] S3.2 主表（Table 1，48 格全齐 3 seeds 双轨双规模，results/table1_main.md；Gate 正式判定已写入 §6：Gate1 混合 / Gate1.5 不过（B6a<B5）/ Gate2 由 B5+B6a+B2+BCM 通过；winner=B5、B6a、B2+BCM）
 - [x] S3.2a 调参窗（迭代档 9 格完成：conv_epoch=4 与 eta_stdp=0.01 各 +0.6 点（低于 2 点换锚阈值，仅作工作点设定），eta_ip/thr_range 平坦，fire_rate 收窄变差；确认档待补 eta_stdp=0.02 边界探针与 conv_epoch∈{4,8} 轨A复核；见 results/s32a_tuning.md）
 - [x] S2.11 新学习规则探索（v6：锦标赛 Round 1（500 地）四变体无一过 +2pt 门槛；**R1 BCM 经 3300 地确认档复活：轨 B ΔR@1=+3.0pt、ΔR@100%P=+10.3pt**（500 地增益是被天花板压缩的，不是无效）——R1（B2+BCM）进主表正式行；R2/R3/R4 负面结果铁化；见 results/s211_round1.md 与 results/r1_bcm_3300/）
 - [ ] S3.3 消融（Table 2/3/3b + 附录）
