@@ -28,6 +28,7 @@ Part 1: 模块说明
   calc_stdp_conv           —— 卷积 STDP 权重更新（正式向量化路径，ADR-3）
   calc_stdp_conv_reference —— Python 循环参考版（仅用于对拍，不用于训练）
   apply_itp_conv           —— 卷积版 ITP 阈值可塑性（observed 必须在 WTA 前统计！）
+  apply_bcm_threshold_conv —— BCM 滑动阈值替代 ITP（b5bcm 格，S33；θ 跟随 θ_M=EMA of post²）
 
 核心公式（blitnet 公式 2 的卷积版）：
     ΔK_c = η · (0.5 − post) · pre_term(patch)，只在 winner 位置聚合触发（local/global WTA）；
@@ -51,6 +52,13 @@ S2.11 规则锦标赛 Round 1 开关（layer 属性携带，默认全关 = B2 �
   attractor  : Step 2 pre_term 由 (pre−0.5) 换成 (patch − 当前核)：
                dK = conv2d_weight(pre_img, w_shape, M) − (Σ_{y,x} M_c)·K_c，
                即逐 winner 更新 (0.5−post)·(patch−K_c) 的向量化形式。
+
+S33 下午批开关（同样默认全关，互斥断言在 ConvSNNLayer 构造）：
+  bcm_full     : R1b 完整 BCM——Step 1 门控 (θ_M−post) → post·(post−θ_M)
+                 （经典 φ(y)=y(y−θ_M)），θ_M 存储与 EMA 复用 bcm_gate；
+  bcm_on_frozen: 冻结前端的阈值自适应替换件（b5bcm 格）——train_conv_layer 中
+                 apply_itp_conv → apply_bcm_threshold_conv（θ 跟随 θ_M），
+                 权重仍被 frozen 守卫完全冻结。
 ================================================================================
 """
 import torch
@@ -93,18 +101,31 @@ def calc_stdp_conv(pre_img,   # [1, C_in, H, W] 输入 spike 图（已 reshape�
 
         # ---- Step 1: 构造响应图 M ----
         # R1（bcm_gate）：固定 0.5 → 每通道滑动阈值 θ_M,c（EMA of post²）。
+        # R1b（bcm_full，S33）：完整 BCM φ(y)=y(y−θ_M) —— 门控从 (θ_M−post) 换成
+        # post·(post−θ_M)，θ_M 机制与 EMA 复用 bcm_gate（与 bcm_gate 互斥，构造断言）。
         # 先用当前 θ_M 构造 M，再更新 θ_M（标准 BCM 时序：用旧阈值门控本步）。
         bcm_on = getattr(layer, 'bcm_gate', False)
-        gate = layer.theta_m.clone() if bcm_on else 0.5
+        bcm_full_on = getattr(layer, 'bcm_full', False)
+        gate = layer.theta_m.clone() if (bcm_on or bcm_full_on) else 0.5
         if layer.wta_mode == 'none':
-            M = gate - out.pre_wta                                  # 稠密（S2.2 none 条）
+            if bcm_full_on:
+                M = out.pre_wta * (out.pre_wta - layer.theta_m)     # 稠密 φ(y)=y(y−θ_M)
+            elif bcm_on:
+                M = gate - out.pre_wta                              # 稠密（S2.2 none 条）
+            else:
+                M = 0.5 - out.pre_wta
         else:
             M = torch.zeros_like(out.pre_wta)
-            M[out.winner_mask] = (gate - out.pre_wta)[out.winner_mask] \
-                if bcm_on else 0.5 - out.pre_wta[out.winner_mask]
+            if bcm_full_on:
+                M[out.winner_mask] = (out.pre_wta
+                                      * (out.pre_wta - layer.theta_m))[out.winner_mask]
+            elif bcm_on:
+                M[out.winner_mask] = (gate - out.pre_wta)[out.winner_mask]
+            else:
+                M[out.winner_mask] = 0.5 - out.pre_wta[out.winner_mask]
 
         # θ_M 更新：θ ← (1−α)θ + α·E[post²]（每通道全图均方响应，含未发放位置）
-        if bcm_on:
+        if bcm_on or bcm_full_on:
             post2 = out.pre_wta.pow(2).mean(dim=(0, 2, 3), keepdim=True)  # [1,C,1,1]
             layer.theta_m.mul_(1.0 - layer.bcm_alpha).add_(layer.bcm_alpha * post2)
 
@@ -237,7 +258,9 @@ def calc_stdp_conv_reference(pre_img, out, layer, pre_mode='centered', agg_mode=
         pad = layer.padding
 
         # R1 BCM 滑动阈值（与正式版同时序：先用旧 θ 构造更新，再 EMA 更新 θ）
+        # R1b（bcm_full，S33）：完整 BCM coef = post·(post−θ_M)，θ_M 机制复用
         bcm_on = getattr(layer, 'bcm_gate', False)
+        bcm_full_on = getattr(layer, 'bcm_full', False)
 
         # pre 端三选一（R4 attractor：patch 用原始输入，弹性项在循环内 −K_c）
         attractor = getattr(layer, 'attractor', False)
@@ -293,9 +316,9 @@ def calc_stdp_conv_reference(pre_img, out, layer, pre_mode='centered', agg_mode=
         x_pad = torch.nn.functional.pad(x, (pad, pad, pad, pad)) if pad > 0 else x
         for (c, y, xx) in coords:
             post = out.pre_wta[0, c, y, xx]                        # winner 响应（标量）
-            g = float(layer.theta_m[0, c, 0, 0]) if bcm_on else 0.5
+            g = float(layer.theta_m[0, c, 0, 0]) if (bcm_on or bcm_full_on) else 0.5
             patch = x_pad[0, 0, y:y + k, xx:xx + k]                # 感受野 patch（含 padding 对齐）
-            coef = (g - post)
+            coef = post * (post - g) if bcm_full_on else (g - post)
             if (c, y, xx) in rank_neg:
                 coef = -layer.rank_delta * coef
             upd = coef * (patch - W[c, 0]) if attractor else coef * patch
@@ -304,8 +327,8 @@ def calc_stdp_conv_reference(pre_img, out, layer, pre_mode='centered', agg_mode=
         if agg_mode == 'mean':
             dK = dK / counts.view(C, 1, 1, 1).clamp(min=1.0)
 
-        # R1：θ_M EMA 更新（在构造完本步更新之后，与正式版同时序）
-        if bcm_on:
+        # R1/R1b：θ_M EMA 更新（在构造完本步更新之后，与正式版同时序）
+        if bcm_on or bcm_full_on:
             post2 = out.pre_wta.pow(2).mean(dim=(0, 2, 3), keepdim=True)
             layer.theta_m.mul_(1.0 - layer.bcm_alpha).add_(layer.bcm_alpha * post2)
 
@@ -368,6 +391,24 @@ def apply_itp_conv(out, layer):
 
 
 # ================================================================================
+# 函数：apply_bcm_threshold_conv —— BCM 滑动阈值替代 ITP（b5bcm 格，S33）
+# ================================================================================
+# 冻结前端（frozen + itp_on_frozen 路径）上的阈值自适应替换件：ITP 的
+# Δθ = η·(observed − f) 换成 BCM 的 θ_M 机制——θ_M,c ← EMA of post²（每通道全图
+# 均方响应，α = bcm_alpha，与 bcm_gate/bcm_full 同一口径），发放阈值 θ 直接跟随
+# θ_M。权重始终冻结（calc_stdp_conv 入口的 frozen 守卫不变），唯一变量是阈值
+# 自适应机制本身（ITP vs BCM）。
+# ================================================================================
+def apply_bcm_threshold_conv(out, layer):
+    """BCM 阈值自适应：θ_M ← EMA(post²)，θ ← θ_M（仅在 frozen + bcm_on_frozen 层调用）"""
+    with torch.no_grad():
+        post2 = out.pre_wta.pow(2).mean(dim=(0, 2, 3), keepdim=True)  # [1,C,1,1]
+        layer.theta_m.mul_(1.0 - layer.bcm_alpha).add_(layer.bcm_alpha * post2)
+        layer.thr.data.copy_(layer.theta_m)
+        layer.thr.data.clamp_(min=getattr(layer, 'thr_min', 0.0))
+
+
+# ================================================================================
 # 函数：train_conv_layer —— conv 层的训练循环（S2.5）
 # ================================================================================
 # 结构镜像 VPRTempoTrain.train_model（VPRTempoTrain.py:327-485），但有三点不同：
@@ -401,6 +442,9 @@ def train_conv_layer(train_loader, layer, model, model_num=0):
     mod = 0
     pre_mode = getattr(model, 'pre_mode', 'centered')
     agg_mode = getattr(model, 'agg_mode', 'mean')
+    # b5bcm 格（S33）：冻结前端上 BCM 滑动阈值替代 ITP——其余流程（前向、退火、
+    # frozen 权重守卫）完全不变，只换每步的阈值自适应函数
+    bcm_thr = getattr(layer, 'bcm_on_frozen', False)
 
     for _ in range(conv_epoch):
         for spikes, _ in train_loader:
@@ -408,7 +452,10 @@ def train_conv_layer(train_loader, layer, model, model_num=0):
             x = layer.reshape_input(spikes)              # [1,1,H,W]
             out = layer(x)                               # 前向 + WTA + 池化
             calc_stdp_conv(x, out, layer, pre_mode=pre_mode, agg_mode=agg_mode)
-            apply_itp_conv(out, layer)
+            if bcm_thr:
+                apply_bcm_threshold_conv(out, layer)
+            else:
+                apply_itp_conv(out, layer)
 
             # 学习率退火 (1−t/T)²，每 100 步一次（镜像 _anneal_learning_rate 但用 conv 的 T）
             if mod % 100 == 0:

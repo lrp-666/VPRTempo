@@ -777,6 +777,8 @@ def train_new_model(models, model_name):
             #             train_conv_layer 让 ITP 适配阈值——带符号零均值核的响应量级
             #             与非负随机核系统性不同，无 ITP 时 25/32 通道死亡；ITP 只调
             #             阈值不触碰手工核，对比变量仍是核的来源
+            #   - frozen + bcm_on_frozen（b5bcm，S33）：同走 train_conv_layer，但
+            #             阈值自适应换为 BCM θ_M 机制（apply_bcm_threshold_conv）
             # -----------------------------------------------------------------
             if cf.is_conv_layer(layer):
                 if getattr(layer, 'frozen', False):

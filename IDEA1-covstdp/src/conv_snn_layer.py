@@ -107,6 +107,13 @@ class ConvSNNLayer(nn.Module):
                                        # −post²·K_c 衰减项（幅度安全钳保留）
                  attractor=False,      # R4 弹性项：pre_term (pre−0.5) → (patch − 当前核)
                                        # （重构式吸引子；dK = corr(pre_img,M) − (ΣM_c)·K_c）
+                 # ---- S33 下午批：完整 BCM / 冻结前端 BCM 阈值 ----
+                 bcm_full=False,       # R1b 完整 BCM：Step 1 门控 (θ_M−post) →
+                                       # post·(post−θ_M)（经典 φ(y)=y(y−θ_M)），θ_M
+                                       # 机制与 EMA 复用 bcm_gate；与 bcm_gate 互斥
+                 bcm_on_frozen=False,  # b5bcm 格：冻结前端上用 BCM 滑动阈值替代 ITP
+                                       # 做阈值自适应（θ 跟随 θ_M=EMA of post²，权重
+                                       # 不变）；仅 frozen 层合法，与 bcm_gate/full 互斥
                  ):
         super(ConvSNNLayer, self).__init__()
         self.device = device
@@ -121,6 +128,16 @@ class ConvSNNLayer(nn.Module):
         self.rank_k = int(rank_k)
         self.oja_decay = oja_decay
         self.attractor = attractor
+        # S33：互斥断言——bcm_full 与 bcm_gate 是同一门控位置的两种形式，不可同开；
+        # bcm_on_frozen 只对冻结层有意义（权重不训练，bcm_gate/full 门控无消费方）
+        if bcm_gate and bcm_full:
+            raise ValueError("bcm_gate 与 bcm_full 互斥（同一门控的两种形式）")
+        if bcm_on_frozen and not frozen:
+            raise ValueError("bcm_on_frozen 仅在 frozen 层上有定义")
+        if bcm_on_frozen and (bcm_gate or bcm_full):
+            raise ValueError("bcm_on_frozen 与 bcm_gate/bcm_full 互斥（冻结层无 STDP 门控）")
+        self.bcm_full = bcm_full
+        self.bcm_on_frozen = bcm_on_frozen
         self.wta_mode = wta_mode
         self.wta_block = wta_block
         self.thr_min = float(thr_min)
@@ -191,7 +208,9 @@ class ConvSNNLayer(nn.Module):
         # R1 BCM 滑动阈值 θ_M [1,C,1,1]（S2.11）：普通属性而非 buffer/parameter
         # —— 推理不需要（calc_stdp_conv 仅在训练路径调用），不进 state_dict，
         # 训练态/推理态加载键不受影响。初值 0.25 = 0.5²，与现规则不动点兼容。
-        if self.bcm_gate:
+        # S33：bcm_full（完整 BCM 门控）与 bcm_on_frozen（冻结层 θ 跟随 θ_M）复用
+        # 同一 θ_M 存储与 EMA 机制。
+        if self.bcm_gate or self.bcm_full or self.bcm_on_frozen:
             self.theta_m = torch.full([1, out_channels, 1, 1], 0.25, device=device)
 
     # ================================================================================

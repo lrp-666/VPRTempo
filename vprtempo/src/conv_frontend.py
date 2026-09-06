@@ -65,6 +65,10 @@ def _gabor_mod():
     return _load("idea1_gabor_frontend", "IDEA1-covstdp/src/gabor_frontend.py")
 
 
+def _manual_mod():
+    return _load("idea1_manual_frontends", "IDEA1-covstdp/src/manual_frontends.py")
+
+
 # ---- 类与函数的惰性代理（首次访问时才真正加载 IDEA1 模块）----
 def __getattr__(name):
     if name in ("ConvSNNLayer", "ConvFrontendModule"):
@@ -105,6 +109,10 @@ def build_conv_layer(model, dims, device, inference):
                                      仅留 clamp(-10,10) 幅度安全钳）。
     frontend='conv_stdp_freesign'  —— S3.3-8 消融：带符号随机初始化 + free_sign=True，
                                      其余与 B2 完全相同（机制验证"符号约束⇒无条纹"）。
+    frontend='dog' / 'loggabor' / 'dct' —— S33 手工特征动物园（manual_frontends.py）：
+                                     DoG 中心-外周（有带通无方向）/ Log-Gabor（无直流，
+                                     参数覆盖对齐 Gabor 组）/ DCT-II 基（有频率无方向
+                                     关键对照），均为冻结 + itp_on_frozen（同 B5 机制）。
     frozen 经构造参数传入（S2.9 起成为 ConvSNNLayer 的正式构造参数；对 random_conv
     与原先"构造后赋值属性"完全等价——不涉及随机数消耗，B1/B2 初始化可比性不变）。
 
@@ -123,10 +131,18 @@ def build_conv_layer(model, dims, device, inference):
     - itp_on_frozen：model 属性为 True 时在冻结前端上保留 ITP 阈值自适应
       （B1+ITP 主表行：random_conv + ITP，与 B5 同待遇的 ITP 匹配对照，PLAN S3.2
       第 6 条）。B5 的 itp_on_frozen 仍由 load_gabor_weights 内部设置（S2.9 修订）。
+
+    S33 下午批：
+    - bcm_full（R1b 完整 BCM）：Step 1 门控 (θ_M−post) → post·(post−θ_M)，θ_M
+      机制复用 bcm_gate 的 EMA；与 bcm_gate 互斥（构造时断言）。
+    - bcm_on_frozen（b5bcm 格）：冻结前端上用 BCM 滑动阈值替代 ITP 做阈值自适应
+      ——仍走 itp_on_frozen 的 train_conv_layer 路径，只把 apply_itp_conv 换成
+      apply_bcm_threshold_conv（θ 跟随 θ_M = EMA of post²），权重始终冻结。
     """
     frontend = getattr(model, 'frontend', 'none')
     ConvSNNLayer = _layer_mod().ConvSNNLayer
     free_sign = frontend in ('gabor_stdp_freesign', 'conv_stdp_freesign')
+    frozen = frontend in ('random_conv', 'gabor', 'dog', 'loggabor', 'dct')
     layer = ConvSNNLayer(
         input_dims=dims,
         in_channels=1,
@@ -141,7 +157,7 @@ def build_conv_layer(model, dims, device, inference):
         wta_block=int(getattr(model, 'wta_block', 4)),
         device=device,
         inference=inference,
-        frozen=frontend in ('random_conv', 'gabor'),
+        frozen=frozen,
         free_sign=free_sign,
         # S2.11 Round 1 规则开关（默认全关 = B2 行为不变；推理侧不使用但保持属性一致）
         bcm_gate=bool(getattr(model, 'bcm_gate', False)),
@@ -151,6 +167,9 @@ def build_conv_layer(model, dims, device, inference):
         rank_k=int(getattr(model, 'rank_k', 2)),
         oja_decay=bool(getattr(model, 'oja_decay', False)),
         attractor=bool(getattr(model, 'attractor', False)),
+        # S33：完整 BCM 门控 / 冻结前端 BCM 阈值（互斥断言在层构造里）
+        bcm_full=bool(getattr(model, 'bcm_full', False)),
+        bcm_on_frozen=bool(getattr(model, 'bcm_on_frozen', False)),
     )
     if frontend == 'gabor':
         # 推理侧同样载入：值与 state_dict 中的保存值逐元素一致（Gabor 组全程确定性），
@@ -161,6 +180,10 @@ def build_conv_layer(model, dims, device, inference):
         _gabor_mod().load_gabor_weights_decomposed(layer)
     elif frontend == 'gabor_stdp_freesign':
         _gabor_mod().load_gabor_weights_signed(layer)
+    elif frontend in ('dog', 'loggabor', 'dct'):
+        # S33 手工特征动物园：与 B5 同一 frozen + itp_on_frozen 机制（确定性核组，
+        # 推理侧重载与 state_dict 逐元素一致）
+        _manual_mod().load_manual_weights(layer, frontend)
     # fork G（S3.2 主表 B1+ITP 行）：冻结前端 + ITP 阈值自适应。Gabor 路径的
     # itp_on_frozen 由 load_gabor_weights 设置；此处覆盖 random_conv 等其余冻结
     # 前端（model.itp_on_frozen=True 时开启）。只影响训练分发（VPRTempoTrain
