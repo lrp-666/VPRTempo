@@ -32,7 +32,8 @@ mkdir -p "$CELL_LOG_DIR"
 VARIANTS=(dog loggabor dct fullbcm b5bcm b6abcm b2block3 b5block3 b5global b5none)
 SEEDS=(0)
 
-GPU_IDS=(${GPU_IDS:-"1 1"})    # 槽位→GPU 映射；默认两个槽位都绑 1 号卡（0 号有他人容器）
+GPU_IDS=(${GPU_IDS:-1 1})      # 槽位→GPU 映射；默认两个槽位都绑 1 号卡（0 号有他人容器）。
+                               # 注意默认值不能加引号（"1 1" 会被当成一个元素，退化为单槽串行）
 PIXI_ENV=${PIXI_ENV:-cuda}     # 工作站 cuda 环境；本机 CPU 调试设 PIXI_ENV=""
 if [ -n "${PY_CMD:-}" ]; then
     PY=($PY_CMD)
