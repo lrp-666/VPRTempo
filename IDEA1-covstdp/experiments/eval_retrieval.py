@@ -99,7 +99,11 @@ def extract_features(models, dataset, device, feature_point="auto"):
                 spikes = x
             per_module = []
             for model in models:
-                x = model.feature_layer.w(spikes)
+                # 设备对齐：build_inference_models 把权重移回 CPU，但 model.device
+                # 属性仍是 cuda:0——spikes 必须对齐权重的真实设备（conv 路径在
+                # conv_forward 里自对齐所以免疫；B0 路径曾在此报 mat2 on cpu）
+                w_dev = model.feature_layer.w.weight.device
+                x = model.feature_layer.w(spikes.to(w_dev))
                 x = bn.clamp_spikes(x, model.feature_layer)
                 per_module.append(x)
             feats.append(torch.cat(per_module, dim=1).cpu())
