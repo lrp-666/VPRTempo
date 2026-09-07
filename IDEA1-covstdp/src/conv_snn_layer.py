@@ -114,6 +114,9 @@ class ConvSNNLayer(nn.Module):
                  bcm_on_frozen=False,  # b5bcm 格：冻结前端上用 BCM 滑动阈值替代 ITP
                                        # 做阈值自适应（θ 跟随 θ_M=EMA of post²，权重
                                        # 不变）；仅 frozen 层合法，与 bcm_gate/full 互斥
+                 bcm_gate_norm=False,  # R1c 润色（S33）：bcm_full 的 φ 按 θ_M 归一
+                                       # （coef=post·(post/θ_M−1)），消除跨通道
+                                       # 活动水平差异导致的门控量纲漂移；零交叉点不变
                  ):
         super(ConvSNNLayer, self).__init__()
         self.device = device
@@ -138,6 +141,7 @@ class ConvSNNLayer(nn.Module):
             raise ValueError("bcm_on_frozen 与 bcm_gate/bcm_full 互斥（冻结层无 STDP 门控）")
         self.bcm_full = bcm_full
         self.bcm_on_frozen = bcm_on_frozen
+        self.bcm_gate_norm = bool(bcm_gate_norm)
         self.wta_mode = wta_mode
         self.wta_block = wta_block
         self.thr_min = float(thr_min)

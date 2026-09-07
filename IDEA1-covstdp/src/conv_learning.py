@@ -104,12 +104,19 @@ def calc_stdp_conv(pre_img,   # [1, C_in, H, W] 输入 spike 图（已 reshape�
         # R1b（bcm_full，S33）：完整 BCM φ(y)=y(y−θ_M) —— 门控从 (θ_M−post) 换成
         # post·(post−θ_M)，θ_M 机制与 EMA 复用 bcm_gate（与 bcm_gate 互斥，构造断言）。
         # 先用当前 θ_M 构造 M，再更新 θ_M（标准 BCM 时序：用旧阈值门控本步）。
+        # R1c（bcm_gate_norm，S33 润色）：φ 除以 θ_M 归一——coef=post·(post/θ_M−1)，
+        # 消除跨通道活动水平差异导致的门控量纲漂移（θ_M 小的通道门控被放大），
+        # 零交叉点不变（post=θ_M）。θ_M 下限 1e-3 防除零。
         bcm_on = getattr(layer, 'bcm_gate', False)
         bcm_full_on = getattr(layer, 'bcm_full', False)
+        bcm_norm = bcm_full_on and getattr(layer, 'bcm_gate_norm', False)
         gate = layer.theta_m.clone() if (bcm_on or bcm_full_on) else 0.5
         if layer.wta_mode == 'none':
             if bcm_full_on:
-                M = out.pre_wta * (out.pre_wta - layer.theta_m)     # 稠密 φ(y)=y(y−θ_M)
+                phi = out.pre_wta * (out.pre_wta - layer.theta_m)     # 稠密 φ(y)=y(y−θ_M)
+                if bcm_norm:
+                    phi = phi / layer.theta_m.clamp(min=1e-3)
+                M = phi
             elif bcm_on:
                 M = gate - out.pre_wta                              # 稠密（S2.2 none 条）
             else:
@@ -117,8 +124,10 @@ def calc_stdp_conv(pre_img,   # [1, C_in, H, W] 输入 spike 图（已 reshape�
         else:
             M = torch.zeros_like(out.pre_wta)
             if bcm_full_on:
-                M[out.winner_mask] = (out.pre_wta
-                                      * (out.pre_wta - layer.theta_m))[out.winner_mask]
+                phi = out.pre_wta * (out.pre_wta - layer.theta_m)
+                if bcm_norm:
+                    phi = phi / layer.theta_m.clamp(min=1e-3)
+                M[out.winner_mask] = phi[out.winner_mask]
             elif bcm_on:
                 M[out.winner_mask] = (gate - out.pre_wta)[out.winner_mask]
             else:
@@ -319,6 +328,8 @@ def calc_stdp_conv_reference(pre_img, out, layer, pre_mode='centered', agg_mode=
             g = float(layer.theta_m[0, c, 0, 0]) if (bcm_on or bcm_full_on) else 0.5
             patch = x_pad[0, 0, y:y + k, xx:xx + k]                # 感受野 patch（含 padding 对齐）
             coef = post * (post - g) if bcm_full_on else (g - post)
+            if bcm_full_on and getattr(layer, 'bcm_gate_norm', False):
+                coef = coef / max(g, 1e-3)          # R1c 归一（与向量化版一致）
             if (c, y, xx) in rank_neg:
                 coef = -layer.rank_delta * coef
             upd = coef * (patch - W[c, 0]) if attractor else coef * patch

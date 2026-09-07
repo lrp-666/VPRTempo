@@ -170,6 +170,7 @@ def build_conv_layer(model, dims, device, inference):
         # S33：完整 BCM 门控 / 冻结前端 BCM 阈值（互斥断言在层构造里）
         bcm_full=bool(getattr(model, 'bcm_full', False)),
         bcm_on_frozen=bool(getattr(model, 'bcm_on_frozen', False)),
+        bcm_gate_norm=bool(getattr(model, 'bcm_gate_norm', False)),
     )
     if frontend == 'gabor':
         # 推理侧同样载入：值与 state_dict 中的保存值逐元素一致（Gabor 组全程确定性），
