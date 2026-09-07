@@ -521,6 +521,13 @@ def parse_network():
                         help="R3: replace norm-preserving renorm with Oja decay term -post^2*w (IDEA1 S2.11)")
     parser.add_argument('--attractor', action='store_true',
                         help="R4: pre-term (pre-0.5) -> (patch - kernel) reconstruction attractor (IDEA1 S2.11)")
+    # ---- IDEA1 feat-BCM：feature_layer 普通 STDP 分支的 BCM 滑动阈值（默认关 = B0 逐比特不变）----
+    # 仅作用于 feature_layer（spk_force=False 分支）；output_layer 的 Spike Forcing 不涉及。
+    parser.add_argument('--feat_bcm', action='store_true',
+                        help="BCM sliding threshold theta_M (EMA of post^2, per-neuron) replaces fixed 0.5 "
+                             "gate in feature_layer STDP (IDEA1); default off = original behavior")
+    parser.add_argument('--feat_bcm_alpha', type=float, default=0.001,
+                        help="EMA rate for feature_layer theta_M (10-50x slower than weight learning)")
 
     # ------------------------------------------------------------------------
     # 【行级】网络功能开关（布尔标志）

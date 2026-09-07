@@ -57,6 +57,8 @@ class SNNLayer(nn.Module):
                  const_inp=[0,0], # 恒定输入 C 的范围 [min, max]，对应公式 (1) 中的 C。BLiTNet 论文中 C≈0.1，但 VPRTempo 代码中默认 [0,0]
                  p=[1,1],  # 连接概率 [P_exc, P_inh]，论文表 I 中 [0.1, 0.5] TODO 所以这里是全连接吗？
                  spk_force=False,# 是否启用 Spike Forcing（仅在输出层 LO 使用），对应 VPRTempo 论文 III-A 末段和公式 (6)
+                 bcm_gate=False, # IDEA1 feat-BCM：普通 STDP 分支的固定门控 0.5 → 每神经元滑动阈值 θ_M（EMA of post²）。默认 False = 原行为逐比特不变
+                 bcm_alpha=0.001, # θ_M 的 EMA 速率（须比权重学习慢 10-50 倍，防与 ITP 双反馈振荡，PLAN S2.11 风险预案）
                  device=None, # 计算设备 (cuda:0 / mps / cpu)，默认为 None 表示自动选择
                  inference=False, # True 表示推理模式，False 表示训练模式。推理模式下不包含学习机制，仅保留前向传播所需的权重和阈值。
                  args=None # 额外的命令行参数（预留）
@@ -185,6 +187,19 @@ class SNNLayer(nn.Module):
             self.sspk_idx = 0    # 预留：强制发放的脉冲索引计数器
             self.spikes = torch.empty([], dtype=torch.float64)  # 预留：脉冲存储张量
             self.spk_force = spk_force  # 是否启用 Spike Forcing 的标志位
+
+            # ----------------------------------------
+            # 逐行说明：BCM 滑动阈值状态（IDEA1 feat-BCM）
+            # ----------------------------------------
+            # bcm_gate=True 时，普通 STDP 分支的门控 (0.5 − post) 换成 (θ_M − post)。
+            # theta_m：每神经元 EMA 状态，shape [1, 输出维度]（与 fire_rate 同形），
+            # 初值 0.25 = 0.5²（与现规则不动点兼容，PLAN S2.11）。
+            # 普通属性（非 nn.Parameter / buffer）→ 不进 state_dict，推理模型无需它。
+            # 仅在训练模式创建；推理分支与 spk_force 分支（output_layer）不涉及。
+            self.bcm_gate = bcm_gate
+            self.bcm_alpha = bcm_alpha
+            if bcm_gate:
+                self.theta_m = torch.full([1, dims[-1]], 0.25, device=self.device)
 
             # ----------------------------------------
             # 逐行说明：创建兴奋性权重 W⁺
@@ -541,18 +556,36 @@ def calc_stdp(prespike,  # 前一层的脉冲输出 x_i^m(t-1)，形状 [batch, 
         post = torch.tile(spikes, (shape[1], 1))
 
         # ----------------------------------------
+        # 逐行说明：BCM 滑动阈值门控（IDEA1 feat-BCM，bcm_gate=True 时生效）
+        # ----------------------------------------
+        # 固定门控 0.5 → 每神经元滑动阈值 θ_M（EMA of post²，机制照抄 conv 版
+        # bcm_gate，conv_learning.py Step 1）。θ_M shape [1, 输出维度]，按输入维度
+        # tile 广播后与 post 同形（[输入维度, 输出维度]，沿行方向每神经元恒定）。
+        # 更新时序与 conv 版一致：先用旧 θ_M 门控本步（tile 出副本），再 EMA 更新
+        # θ_M ← (1−α)·θ_M + α·post²（post² 取本步 clamp 后脉冲，batch=1 无空间维，
+        # 即 spikes.pow(2)，对应 conv 版的全图均方响应）。
+        bcm_on = getattr(layer, 'bcm_gate', False)
+        if bcm_on:
+            gate = torch.tile(layer.theta_m, (shape[1], 1))
+            layer.theta_m.mul_(1.0 - layer.bcm_alpha).add_(layer.bcm_alpha * spikes.pow(2))
+        else:
+            gate = 0.5
+
+        # ----------------------------------------
         # 逐行说明：兴奋性权重更新（公式 2）
         # ----------------------------------------
-        # 更新量 = (0.5 - post) * (pre > 0) * (post > 0) * η_STDP
+        # 更新量 = (gate - post) * (pre > 0) * (post > 0) * η_STDP
         # 物理意义拆解：
         #   (pre > 0)    : Heaviside 函数 Θ(x_i^m(t-1))，前层必须发放
         #   (post > 0)   : Heaviside 函数 Θ(x_j^n(t))，后层必须发放
-        #   (0.5 - post) : 调制因子。若 post 较小（如 0.1），则增量 +0.4，大幅增强；
-        #                  若 post 较大（如 0.9），则增量 -0.4，反而减弱。
+        #   (gate - post): 调制因子。默认 gate=0.5：若 post 较小（如 0.1），则增量 +0.4，
+        #                  大幅增强；若 post 较大（如 0.9），则增量 -0.4，反而减弱。
         #                  这使得后层脉冲趋向于中等幅度（≈0.5），防止饱和。
+        #                  bcm_gate=True 时 gate=θ_M（该神经元的滑动均方活动），
+        #                  门控随神经元活动水平自适应（BCM 选择性锐化）。
         #   η_STDP       : 当前时刻的学习率
         #   havconnCombinedExc.T : 兴奋连接掩码，确保只有正权重被更新
-        layer.w.weight.data += (((0.5 - post) * (pre > 0) * (post > 0) *
+        layer.w.weight.data += (((gate - post) * (pre > 0) * (post > 0) *
                                   layer.havconnCombinedExc.T) 
                                   * layer.eta_stdp).T
 
@@ -561,9 +594,9 @@ def calc_stdp(prespike,  # 前一层的脉冲输出 x_i^m(t-1)，形状 [batch, 
         # ----------------------------------------
         # 与兴奋性权重更新公式相同，但作用在抑制连接掩码上
         # 且学习率乘以 -1，使得更新方向相反：
-        #   当 (0.5 - post) > 0（post 不足）时，兴奋权重增加，抑制权重减小（趋近于 0）
+        #   当 (gate - post) > 0（post 不足）时，兴奋权重增加，抑制权重减小（趋近于 0）
         #   这是因为抑制输入对输出有负向贡献，要增加输出就应该减弱抑制。
-        layer.w.weight.data += (((0.5 - post) * (pre > 0) * (post > 0) 
+        layer.w.weight.data += (((gate - post) * (pre > 0) * (post > 0) 
                                  * layer.havconnCombinedInh.T) 
                                  * (layer.eta_stdp * -1)).T
 

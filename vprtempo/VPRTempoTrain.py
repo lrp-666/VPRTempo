@@ -221,6 +221,8 @@ class VPRTempoTrain(nn.Module):
             ip_rate=0.15,
             stdp_rate=0.005,
             p=[0.1, 0.5],
+            bcm_gate=bool(getattr(self, 'feat_bcm', False)),        # IDEA1 feat-BCM（默认关 = B0 原行为）
+            bcm_alpha=float(getattr(self, 'feat_bcm_alpha', 0.001)),
             device=self.device
         )
         self.add_layer(
