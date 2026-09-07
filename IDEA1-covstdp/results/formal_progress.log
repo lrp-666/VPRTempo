@@ -1,0 +1,15 @@
+2026-09-07 02:30:20 | BATCH_START | remaining=12(formal) | seed- | gpu- | wall=0s
+2026-09-07 02:32:15 | DONE | t1_b5bcm_500 | seed1 | gpu0 | wall=113s
+2026-09-07 02:32:20 | DONE | t1_b5bcm_500 | seed2 | gpu1 | wall=116s
+2026-09-07 02:34:24 | DONE | t1_dct_500 | seed1 | gpu0 | wall=118s
+2026-09-07 02:34:27 | DONE | t1_dct_500 | seed2 | gpu1 | wall=119s
+2026-09-07 02:36:27 | DONE | t1_loggabor_500 | seed1 | gpu0 | wall=117s
+2026-09-07 02:36:29 | DONE | t1_loggabor_500 | seed2 | gpu1 | wall=117s
+2026-09-07 02:47:39 | DONE | t1_b5bcm_3300 | seed1 | gpu0 | wall=665s
+2026-09-07 02:47:46 | DONE | t1_b5bcm_3300 | seed2 | gpu1 | wall=670s
+2026-09-07 02:58:38 | DONE | t1_dct_3300 | seed1 | gpu0 | wall=649s
+2026-09-07 02:58:45 | DONE | t1_dct_3300 | seed2 | gpu1 | wall=654s
+2026-09-07 03:09:49 | DONE | t1_loggabor_3300 | seed1 | gpu0 | wall=666s
+2026-09-07 03:10:00 | DONE | t1_loggabor_3300 | seed2 | gpu1 | wall=665s
+2026-09-07 03:10:05 | BATCH_END | done_cells=12 fail_cells=0
+0 | seed- | gpu- | wall=0s

@@ -14,3 +14,6 @@ tutorials/mats/1_BasicDemo/
 *.DS_Store
 IDEA1-covstdp/phase1/configs/local_override.json
 IDEA1-covstdp/docs/workstation-handover.md
+
+# 相似度矩阵大文件（逐格 S_trackB，本地/工作站留存，不进库）
+*.npy

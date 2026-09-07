@@ -11,7 +11,7 @@
 #   - results/table1_main.json 机器可读全量（每格逐 seed 值 + 聚合 + 差值）
 #
 # 纪律：只做汇总，不做 Gate 判定解读（判定回母会话）。数字一律以 JSON 为准。
-# 训练墙钟从 results/table1_logs/<exp>__seed<s>.log 的
+# 训练墙钟从 results/table1_logs/ 或 results/formal_logs/ 的 <exp>__seed<s>.log 的
 # "[run_exp] train 完成，墙钟 Xs" 行解析（JSON 中无训练墙钟字段）。
 #
 # 用法：pixi run python IDEA1-covstdp/experiments/make_table1.py
@@ -25,9 +25,10 @@ from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 RESULTS = REPO_ROOT / "IDEA1-covstdp" / "results"
-LOG_DIR = RESULTS / "table1_logs"
+LOG_DIRS = [RESULTS / "table1_logs", RESULTS / "formal_logs", RESULTS / "zoo_logs"]
 
-VARIANTS = ["b0", "b1", "b1itp", "b2", "b2bcm", "b5", "b6a", "freesign"]
+VARIANTS = ["b0", "b1", "b1itp", "b2", "b2bcm", "b5", "b6a", "freesign",
+            "b5bcm", "dct", "loggabor"]
 VARIANT_LABEL = {
     "b0": "B0（基线，无前端）",
     "b1": "B1（随机 Conv 冻结）",
@@ -37,6 +38,9 @@ VARIANT_LABEL = {
     "b5": "B5（手工 Gabor 冻结+ITP）",
     "b6a": "B6a（Gabor 初始化+STDP）",
     "freesign": "freesign（放开符号钳制）",
+    "b5bcm": "B5+BCM（冻结 Gabor + BCM 阈值，探索批升档）",
+    "dct": "DCT 基（频率无方向，探索批升档）",
+    "loggabor": "Log-Gabor（探索批升档）",
 }
 SCALES = [500, 3300]
 SEEDS = [0, 1, 2]
@@ -84,13 +88,15 @@ def load_cell(variant: str, scale: int, seed: int) -> dict:
             "wall_time_s": t["wall_time_s"],
         }
 
-    # 训练墙钟：跑批 cell 日志（JSON 无此字段）
-    cell_log = LOG_DIR / f"{exp}__seed{seed}.log"
+    # 训练墙钟：跑批 cell 日志（JSON 无此字段）；table1 批与 formal 批两个日志目录
     cell["train_wall_s"] = None
-    if cell_log.exists():
-        m = WALL_RE.search(cell_log.read_text(errors="replace"))
-        if m:
-            cell["train_wall_s"] = float(m.group(1))
+    for log_dir in LOG_DIRS:
+        cell_log = log_dir / f"{exp}__seed{seed}.log"
+        if cell_log.exists():
+            m = WALL_RE.search(cell_log.read_text(errors="replace"))
+            if m:
+                cell["train_wall_s"] = float(m.group(1))
+            break
 
     # 异常扫描（预注册阈值：R@1 < 0.1 或 == 1.0 判可疑，标注待母会话复核）
     for track in ("trackA", "trackB"):
@@ -167,13 +173,15 @@ def main():
     md.append("> 由 `experiments/make_table1.py` 自动生成；数字一律以各格 JSON 为准。\n"
               "> 轨 A = 完整系统（经 output layer，run_inference）；轨 B = raw feature retrieval\n"
               "> （前端输出 flatten + cosine 最近邻）。mean ± std 为 3 seeds（0/1/2）样本统计。\n"
+              "> 后三行（B5+BCM / DCT 基 / Log-Gabor）为探索批升档变体，seed0 复用迭代/确认档\n"
+              "> （exp_id 与配置逐键核对一致），seed1/2 由 run_zoo_formal.sh 补齐。\n"
               "> 本表只做汇总，Gate 判定解读回母会话（判据见 PLAN.md §6）。\n")
 
     # ---- 完整性 / 异常 ----
     md.append("\n## 完整性与异常检查\n")
     n_cells = len(VARIANTS) * len(SCALES) * len(SEEDS)
     if not problems:
-        md.append(f"- 48 格（8 变体 × 2 规模 × 3 seeds）轨 A + 轨 B JSON、相似度矩阵 .npy、"
+        md.append(f"- {n_cells} 格（{len(VARIANTS)} 变体 × {len(SCALES)} 规模 × {len(SEEDS)} seeds）轨 A + 轨 B JSON、相似度矩阵 .npy、"
                   f"logfile 全部齐全（共扫描 {n_cells} 格）。")
         md.append("- 未发现 R@1 < 0.1 或 R@1 = 1.0 的可疑值。")
     else:
@@ -231,6 +239,11 @@ def main():
         ("B5 − B0", "b5", "b0", "trackA", "—（参照 PLAN §0.4 B5 双轨超 B0 的迭代档发现）"),
         ("freesign − B0", "freesign", "b0", "trackA", "—"),
         ("B2+BCM − B0", "b2bcm", "b0", "trackA", "—"),
+        ("B5+BCM − B5", "b5bcm", "b5", "trackB",
+         "—（探索批升档：BCM 阈值替代 ITP 对冻结 Gabor 有无增量，判定回母会话）"),
+        ("DCT 基 − B5", "dct", "b5", "trackB",
+         "—（探索批升档：频率覆盖 vs 方向选择性，判定回母会话）"),
+        ("Log-Gabor − B5", "loggabor", "b5", "trackB", "—（探索批升档）"),
     ]
     diff_records = []
     for label, a, b, track, gate in DIFFS:
@@ -247,7 +260,7 @@ def main():
 
     # ---- 附注：训练墙钟 ----
     md.append("\n## 附注：训练墙钟（每格 mean ± std，秒，3 seeds）\n")
-    md.append("> 来源：`results/table1_logs/<exp>__seed<s>.log` 中 run_exp 的"
+    md.append("> 来源：`results/table1_logs/`、`results/formal_logs/`、`results/zoo_logs/` 下 `<exp>__seed<s>.log` 中 run_exp 的"
               "「train 完成，墙钟 Xs」行（轨 A 训练阶段，双 RTX 卡混跑，仅供量级参考）。"
               "轨 A 评估与轨 B 检索墙钟在各格 JSON 的 wall_time_s 字段，见 table1_main.json。\n")
     md.append("| 变体 | 500 地 train | 3300 地 train |")
@@ -270,7 +283,7 @@ def main():
     # ---- 机器可读全量 ----
     full = {
         "generated_by": "IDEA1-covstdp/experiments/make_table1.py",
-        "protocol": "8 variants × 2 scales × 3 seeds × dual-track (A=output layer, B=raw feature retrieval)",
+        "protocol": "11 variants (8 main + 3 zoo-promoted) × 2 scales × 3 seeds × dual-track (A=output layer, B=raw feature retrieval)",
         "variants": VARIANT_LABEL,
         "cells": {f"{v}_{sc}": cells[(v, sc)] for v in VARIANTS for sc in SCALES},
         "aggregates": {
@@ -292,7 +305,7 @@ def main():
     if problems:
         print(f"[make_table1] ⚠️ {len(problems)} 条完整性/异常问题，见 md 报告")
         return 1
-    print("[make_table1] 完整性检查通过：48/48 格双轨齐全，无硬异常")
+    print(f"[make_table1] 完整性检查通过：{n_cells}/{n_cells} 格双轨齐全，无硬异常")
     return 0
 
 
