@@ -1,0 +1,19 @@
+2026-09-08 00:14:37 | BATCH_START | remaining=16(bcmfeat) | seed- | gpu- | wall=0s
+2026-09-08 00:15:24 | DONE | g1_b0bcm_500 | seed0 | gpu0 | wall=45s
+2026-09-08 00:16:39 | DONE | g2_b2bcm_500 | seed0 | gpu1 | wall=118s
+2026-09-08 00:17:25 | DONE | g3_b2bcmbcm_500 | seed0 | gpu0 | wall=112s
+2026-09-08 00:18:36 | DONE | g4_b5bcm_500 | seed0 | gpu1 | wall=111s
+2026-09-08 00:20:50 | DONE | g1_b0bcm_3300 | seed0 | gpu0 | wall=193s
+2026-09-08 00:21:52 | DONE | g1_b0bcm_3300 | seed1 | gpu1 | wall=193s
+2026-09-08 00:24:10 | DONE | g1_b0bcm_3300 | seed2 | gpu0 | wall=189s
+2026-09-08 00:32:49 | DONE | g2_b2bcm_3300 | seed0 | gpu1 | wall=646s
+2026-09-08 00:34:56 | DONE | g2_b2bcm_3300 | seed1 | gpu0 | wall=641s
+2026-09-08 00:43:44 | DONE | g2_b2bcm_3300 | seed2 | gpu1 | wall=647s
+2026-09-08 00:45:42 | DONE | g3_b2bcmbcm_3300 | seed0 | gpu0 | wall=643s
+2026-09-08 00:54:37 | DONE | g3_b2bcmbcm_3300 | seed1 | gpu1 | wall=646s
+2026-09-08 00:56:37 | DONE | g3_b2bcmbcm_3300 | seed2 | gpu0 | wall=644s
+2026-09-08 01:05:28 | DONE | g4_b5bcm_3300 | seed0 | gpu1 | wall=643s
+2026-09-08 01:07:28 | DONE | g4_b5bcm_3300 | seed1 | gpu0 | wall=641s
+2026-09-08 01:16:38 | DONE | g4_b5bcm_3300 | seed2 | gpu1 | wall=659s
+2026-09-08 01:16:40 | BATCH_END | done_cells=16 fail_cells=0
+0 | seed- | gpu- | wall=0s
