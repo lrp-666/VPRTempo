@@ -792,6 +792,9 @@ conv2（k=5, 无 padding）：28 → 24
 - [x] S3.2 主表（Table 1，48 格全齐 3 seeds 双轨双规模，results/table1_main.md；Gate 正式判定已写入 §6：Gate1 混合 / Gate1.5 不过（B6a<B5）/ Gate2 由 B5+B6a+B2+BCM 通过；winner=B5、B6a、B2+BCM）
 - [x] S3.2a 调参窗（迭代档 9 格完成：conv_epoch=4 与 eta_stdp=0.01 各 +0.6 点（低于 2 点换锚阈值，仅作工作点设定），eta_ip/thr_range 平坦，fire_rate 收窄变差；确认档待补 eta_stdp=0.02 边界探针与 conv_epoch∈{4,8} 轨A复核；见 results/s32a_tuning.md）
 - [x] S2.11 新学习规则探索（v6：锦标赛 Round 1（500 地）四变体无一过 +2pt 门槛；**R1 BCM 经 3300 地确认档复活：轨 B ΔR@1=+3.0pt、ΔR@100%P=+10.3pt**（500 地增益是被天花板压缩的，不是无效）——R1（B2+BCM）进主表正式行；R2/R3/R4 负面结果铁化；见 results/s211_round1.md 与 results/r1_bcm_3300/）
+- [x] fullBCM 润色与确认（bcm_gate_norm 归一化 +2.8pt 但完整版仍败于简化版；BCM 家族冠军 = 简化门控版 B2+BCM；见 variants_overview §7.4b）
+- [x] 动物园三行升正式档（B5+BCM / DCT / Log-Gabor 3 seeds × 双规模：B5+BCM 追平 B5 且 R@100%P +6.2pt；DCT−B5 仅 −2.3pt 坐实"频率覆盖>方向选择性"；见 table1_main.md 11 变体版）
+- [x] feat-BCM 推广到 feature 层（分支 feat/convstdp-bcm-feature，G1–G4 共 16 格：**负面结果**——轨 A 系统性崩塌（3300 地全部 <0.14），锚点校验证明塌缩定位在 feature 层内部；BCM 收益位置特异（竞争层有效、广播层有害），实证 Zenke & Gerstner 快慢补偿分工；见 results/bcmfeat_report.md）
 - [ ] S3.3 消融（Table 2/3/3b + 附录）
 - [ ] S3.4 效率（Table 4）
 - [ ] S3.5 ORC 复跑 + SpikingJelly 参照
